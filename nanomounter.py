@@ -225,7 +225,7 @@ class BaseProcessor:
         raise
 
     def make_core_handler(self, fun, front_fixtures):
-        expanded_fixtures = self._fixture_service.expand_deps(front_fixtures)
+        expanded_fixtures = self._fixture_service.expand_deps(*front_fixtures)
 
         @functools.wraps(fun)
         def handler(*args, **kwargs):
@@ -250,7 +250,7 @@ class BaseProcessor:
             ctx.phase = 'request'
             fs.use(*local.fixtures, is_expanded=True)
             ctx.phase = 'run'
-            ctx.output = self.fun(*args, **kwargs)
+            ctx.output = local.fun(*args, **kwargs)
             ctx.phase = 'output'
             fs.on_output()
             ctx.phase = 'finalize'

@@ -121,12 +121,13 @@ BaseFixture.__track_deps_if_instance__.append(BaseFixture)
 class OrderedUniqSet(dict):
     add = lambda s, *items: dict.update(s, {it: True for it in items})
 
-    def __init__(self, lst):
+    def __init__(self, items=None):
         super().__init__()
-        self.add(lst)
+        if items:
+            self.add(*items)
 
 
-class FixtureShop(LocalStorage):
+class FixtureShop:
 
     @classmethod
     def make_from(cls, src_class):
@@ -134,18 +135,19 @@ class FixtureShop(LocalStorage):
         return ret
 
     def __init__(self, fixtures_dict):
+        self._local = threading.local()
+        self.init_local()
         self.fixtures = fixtures_dict
         self._on_checkout = None
 
-    def init(self):
-        local = self._safe_local = types.SimpleNamespace()
-        local.backdoor_opened = False
+    def init_local(self):
+        self._local.backdoor_opened = False
 
     def open_backdoor(self):
-        self._safe_local.backdoor_opened = True
+        self._local.backdoor_opened = True
 
     def close_backdoor(self):
-        self._safe_local.backdoor_opened = False
+        self._local.backdoor_opened = False
 
     @staticmethod
     def _get_fixtures(src_class):
@@ -159,7 +161,7 @@ class FixtureShop(LocalStorage):
 
     def __getattr__(self, k):
         f = self.fixtures[k]
-        if not self._safe_local.backdoor_opened:
+        if not self._local.backdoor_opened:
             self._on_checkout(f)
         return f
 
@@ -170,16 +172,12 @@ class FixtureService(LocalStorage):
         local = self._safe_local = types.SimpleNamespace()
         local.involved = OrderedUniqSet()
         local.ctx = ctx
-        local.backdoor_opened = False
 
     @staticmethod
     def expand_deps(*fixtures):
         ret = OrderedUniqSet()
-        [
-            ret.add(fdep)
-            for fdep in (f.with_deps for f in fixtures)
-        ]
-        return ret
+        [ret.add(*f.with_deps) for f in fixtures]
+        return list(ret)
 
     def use(self, *fixtures, is_expanded = False):
         local = self._safe_local
@@ -187,11 +185,11 @@ class FixtureService(LocalStorage):
         involved = local.involved
         not_involved = OrderedUniqSet()
         if is_expanded:
-            [not_involved.add(f) for f in fixtures if f not in involved]
+            not_involved.add(*[f for f in fixtures if f not in involved])
         else:
             [
-                not_involved.add(fdep)
-                for fdep in (f.with_deps for f in fixtures if f not in involved)
+                not_involved.add(*f.with_deps)
+                for f in fixtures if f not in involved
             ]
         involved.add(*not_involved)
         [f.on_touch(ctx) for f in not_involved]
@@ -208,7 +206,7 @@ class FixtureService(LocalStorage):
         if not involved:
             return True
         ctx = local.ctx
-        [involved.pop(f).finalize(ctx) for f in [*involved]]
+        [involved.pop(f) and f.finalize(ctx) for f in [*involved]]
 
 
 class BaseProcessor:
@@ -328,6 +326,7 @@ class Action:
 
     @property
     def uses(self):
+        self._fx_shop.init_local()
         self._fx_shop.open_backdoor()
         return self._uses
 

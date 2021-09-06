@@ -15,20 +15,16 @@ class Foo(BaseFixture):
 class Bar(BaseFixture):
     def __init__(self, foo):
         self.foo = foo
-        pass
-        #self._safe_local = types.SimpleNamespace(a='a')
 
 
 class Baz(BaseFixture):
     def __init__(self, bar, foo):
-        #self._safe_local = types.SimpleNamespace(a='a')
         self.foo = foo
         self.bar = bar
 
 
 class UseFix(BaseFixture):
     def __init__(self):
-        #self._safe_local = types.SimpleNamespace(a='a')
         self.use_fixtures(baz)
         self.use_fixtures(baz)
 
@@ -41,6 +37,10 @@ def test_deps():
     assert baz.with_deps == [foo, bar, baz]
     assert baz.with_deps is baz._with_deps_cached
     assert use_fix.__prerequisites__ == [baz]
+    assert use_fix.with_deps == [foo, bar, baz, use_fix]
+    assert use_fix.use_fixtures(foo) is foo
+    assert use_fix.use_fixtures(foo, bar) == (foo, bar)
+    assert use_fix._with_deps_cached is None
     assert use_fix.with_deps == [foo, bar, baz, use_fix]
 
 

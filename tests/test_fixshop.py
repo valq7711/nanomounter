@@ -1,7 +1,6 @@
 
 import pytest
-import types
-from orgapyzer import BaseFixture, FixtureShop
+from omfitt import BaseFixture, FixtureShop
 from unittest.mock import MagicMock
 
 
@@ -17,10 +16,10 @@ def foo_bar():
     return ret
 
 
-
 @pytest.fixture
 def shop(foo_bar):
     foo_, bar_ = foo_bar
+
     @FixtureShop.make_from
     class Shop:
         foo = foo_
@@ -58,7 +57,3 @@ def test_backdoor(shop, foo_bar):
     shop.close_backdoor()
     assert shop.bar is bar
     assert cb.called
-
-
-
-

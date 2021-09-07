@@ -1,9 +1,7 @@
 
-from _pytest.python_api import raises
 import pytest
-import types
-from orgapyzer import BaseFixture, FixtureService, BaseProcessor, FixtureShop, Action
-from unittest.mock import MagicMock, call, patch
+from omfitt import BaseFixture, FixtureService, BaseProcessor, FixtureShop, Action
+from unittest.mock import MagicMock
 
 
 class Proc(BaseProcessor):
@@ -44,12 +42,12 @@ class Fixture(BaseFixture):
             raise err_cls(self.name)
 
 
-
 @pytest.fixture
 def foo_bar_baz(request):
     ret = [Fixture(f, r) for f, r in request.param]
     BaseFixture.__init_request_ctx__()
     return ret
+
 
 @pytest.fixture
 def ferr():
@@ -70,9 +68,11 @@ def foo_bar_baz_deps(foo_bar_baz):
 def fx_service():
     return FixtureService()
 
+
 @pytest.fixture
 def shop(foo_bar_baz, fx_service):
     foo_, bar_, baz_ = foo_bar_baz
+
     @FixtureShop.make_from
     class Shop:
         foo = foo_
@@ -82,17 +82,21 @@ def shop(foo_bar_baz, fx_service):
     Shop.on_checkout(fx_service.use)
     return Shop
 
+
 @pytest.fixture
 def fx_proc(fx_service):
     return Proc(fx_service, {})
 
+
 class Mounter:
     def __init__(self):
         self.dict = {}
+
     def __call__(self, key):
         def inner(f):
             self.dict[key] = f
         return inner
+
 
 @pytest.fixture
 def mounter():
@@ -115,6 +119,7 @@ def action_foo(shop, action: Action):
         return ['a']
     return action
 
+
 @pytest.fixture
 def action_out(action_foo, shop):
     @action_foo('/bar')
@@ -134,7 +139,7 @@ def action_out(action_foo, shop):
             MagicMock(),
             [('foo', False), ('bar', False), ('baz', False)]
         ],
-     ],
+    ],
     indirect=['foo_bar_baz']
 )
 def test_action(action_out, mounter, arg: MagicMock):

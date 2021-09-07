@@ -1,16 +1,16 @@
 from setuptools import setup
-import orgapyzer
+import omfitt
 
 setup(
-    name="orgapyzer",
-    version=orgapyzer.__version__,
+    name="omfitt",
+    version=omfitt.__version__,
     url="https://github.com/valq7711/ombott",
-    license=orgapyzer.__license__,
-    author=orgapyzer.__author__,
+    license=omfitt.__license__,
+    author=omfitt.__author__,
     author_email="valq7711@gmail.com",
-    maintainer=orgapyzer.__author__,
+    maintainer=omfitt.__author__,
     maintainer_email="valq7711@gmail.com",
-    description="Actions mounter",
+    description="Actions fitter for py4web",
     platforms="any",
     keywords='python webapplication',
     classifiers=[
@@ -24,7 +24,7 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
         "Topic :: Software Development :: Libraries :: Python Modules",
-    ],nn
+    ],
     python_requires='>=3.7',
-    python_modules = ['orgapyzer']
+    python_modules = ['omfitt']
 )

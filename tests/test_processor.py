@@ -1,10 +1,7 @@
 
-from _pytest.python_api import raises
 import pytest
-import types
-from orgapyzer import BaseFixture, FixtureService, BaseProcessor, FixtureShop
-from unittest.mock import MagicMock, call, patch
-
+from omfitt import BaseFixture, FixtureService, BaseProcessor, FixtureShop
+from unittest.mock import MagicMock
 
 
 class Proc(BaseProcessor):
@@ -45,12 +42,12 @@ class Fixture(BaseFixture):
             raise err_cls(self.name)
 
 
-
 @pytest.fixture
 def foo_bar_baz(request):
     ret = [Fixture(f, r) for f, r in request.param]
     BaseFixture.__init_request_ctx__()
     return ret
+
 
 @pytest.fixture
 def ferr():
@@ -71,9 +68,11 @@ def foo_bar_baz_deps(foo_bar_baz):
 def fx_service():
     return FixtureService()
 
+
 @pytest.fixture
 def shop(foo_bar_baz, fx_service):
     foo_, bar_, baz_ = foo_bar_baz
+
     @FixtureShop.make_from
     class Shop:
         foo = foo_
@@ -83,13 +82,16 @@ def shop(foo_bar_baz, fx_service):
     Shop.on_checkout(fx_service.use)
     return Shop
 
+
 @pytest.fixture
 def fx_proc(fx_service):
     return Proc(fx_service, {})
 
+
 @pytest.fixture
 def handler(fx_proc: Proc, foo_bar_baz, shop):
     foo_, bar_ = foo_bar_baz[:2]
+
     def core(arg=None):
         if arg:
             arg('core')
@@ -132,7 +134,6 @@ def test_process(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService
 
     assert fx_proc._local.fixtures == foo_bar_baz[:-1]
     assert not fx_service._safe_local.involved
-
 
 
 @pytest.mark.parametrize(

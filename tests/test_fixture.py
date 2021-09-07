@@ -1,16 +1,15 @@
 import pytest
 import types
-from orgapyzer import BaseFixture
-
+from omfitt import BaseFixture
 
 
 class Foo(BaseFixture):
     def __init__(self):
         pass
-        #self._safe_local = types.SimpleNamespace(a='a')
 
     def on_touch(self, ctx):
         self._safe_local = types.SimpleNamespace(a='a')
+
 
 class Bar(BaseFixture):
     def __init__(self, foo):
@@ -28,10 +27,12 @@ class UseFix(BaseFixture):
         self.use_fixtures(baz)
         self.use_fixtures(baz)
 
+
 foo = Foo()
 bar = Bar(foo)
 baz = Baz(bar, foo)
 use_fix = UseFix()
+
 
 def test_deps():
     assert baz.with_deps == [foo, bar, baz]
@@ -48,6 +49,7 @@ def test_local():
     BaseFixture.__init_request_ctx__()
     foo.on_touch({})
     foo._safe_local.a == 'a'
+
 
 def test_local_err():
     BaseFixture.__init_request_ctx__()

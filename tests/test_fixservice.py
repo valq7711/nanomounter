@@ -1,7 +1,6 @@
 
 import pytest
-import types
-from orgapyzer import BaseFixture, FixtureService
+from omfitt import BaseFixture, FixtureService
 from unittest.mock import MagicMock, call
 
 
@@ -25,7 +24,6 @@ def foo_bar_baz():
     ret = Fixture('foo'), Fixture('bar'), Fixture('baz')
     BaseFixture.__init_request_ctx__()
     return ret
-
 
 
 @pytest.fixture
@@ -83,5 +81,3 @@ def test_process_flow_deps(fx_service: FixtureService, foo_bar_baz_deps):
     ctx.reset_mock()
     fx_service.finalize()
     assert ctx.mock_calls == [call(f.name) for f in foo_bar_baz_deps]
-
-

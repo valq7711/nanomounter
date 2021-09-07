@@ -8,14 +8,14 @@ class Fixture(BaseFixture):
     def __init__(self, name):
         self.name = name
 
-    def on_touch(self, ctx):
+    def take_on(self, ctx):
         self._safe_local = {}
         ctx(self.name)
 
     def on_output(self, ctx):
         ctx(self.name)
 
-    def finalize(self, ctx):
+    def on_finalize(self, ctx):
         ctx(self.name)
 
 

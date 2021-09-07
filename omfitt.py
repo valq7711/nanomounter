@@ -1,11 +1,19 @@
 import threading
 import functools
 import types
+import enum
 
 __version__ = '0.0.1'
 __author__ = "Valery Kucherov <valq7711@gmail.com>"
 __copyright__ = "Copyright (C) 2021 Valery Kucherov"
 __license__ = "MIT"
+
+
+class ProcessPhase(str, enum.Enum):
+    SETUP = 'setup'
+    RUN = 'run'
+    OUTPUT = 'output'
+    FINALIZE = 'finalize'
 
 
 class RouteContext:
@@ -73,17 +81,34 @@ class BaseFixture(LocalStorage):
         self._with_deps_cached = None
         return self
 
-    def on_touch(self, ctx):
-        pass  # called when a request arrives or fixture is touched in core-function
+    def take_on(self, ctx):
+        ''' Called before run or before direct use of the fixture.
+
+            Not called if an exception is raised before,
+            i.e. from previous try-to-taken fixture.
+
+        '''
+        pass
 
     def on_output(self, ctx):
-        pass  # called after successful core-function run
+        ''' Called after successful core-function run.
 
-    def finalize(self, ctx):
-        pass  # called anyawy after core-function run
+            Not called if an exception is raised before.
+
+        '''
+        pass
+
+    def on_finalize(self, ctx):
+        ''' Called at the end of process.
+
+            Not called if an exception is raised before with ctx.stop_finalize set to True.
+
+        '''
+        pass
 
     def use_fixtures(self, *fixtures):
-        '''
+        '''Use other fixtures with dependency tracking.
+
         self.some_fixture = self.use_fixtures(SomeFixture(...))
         foo, bar = self.use_fixtures(Foo(...), Bar(...))
 
@@ -99,6 +124,10 @@ class BaseFixture(LocalStorage):
 
     @property
     def with_deps(self):
+        '''Return a list of all dependencies with the fixture itself.
+
+           [independent ... dependent]
+        '''
         if self._with_deps_cached is not None:
             return self._with_deps_cached
         fixtures = []
@@ -192,7 +221,7 @@ class FixtureService(LocalStorage):
                 for f in fixtures if f not in involved
             ]
         involved.add(*not_involved)
-        [f.on_touch(ctx) for f in not_involved]
+        [f.take_on(ctx) for f in not_involved]
 
     def on_output(self):
         local = self._safe_local
@@ -206,7 +235,7 @@ class FixtureService(LocalStorage):
         if not involved:
             return True
         ctx = local.ctx
-        [involved.pop(f) and f.finalize(ctx) for f in [*involved]]
+        [involved.pop(f) and f.on_finalize(ctx) for f in [*involved]]
 
 
 class BaseProcessor:
@@ -225,6 +254,9 @@ class BaseProcessor:
     def ctx(self):
         return self._local.ctx
 
+    def init_context(self):
+        pass
+
     def default_exception_handler(self, ctx, ex):
         raise
 
@@ -240,9 +272,6 @@ class BaseProcessor:
             return self.process(*args, **kwargs)
 
         return handler
-
-    def init_context(self):
-        pass
 
     def process_inner(self, *args, **kwargs):
         local = self._local
@@ -303,14 +332,16 @@ class BaseProcessor:
 
 class Fitter:
 
-    def __init__(self, processor, fx_shop, mounter=None):
+    def __init__(self, processor: BaseProcessor, fixture_shop: FixtureShop,
+                 mounter=None):
+
         self._mounter = mounter
-        self._processor: BaseProcessor = processor
-        self._fx_shop: FixtureShop = fx_shop
+        self._processor = processor
+        self.fixture_shop = fixture_shop
         self._registered = {}
 
     def _uses(self, *fixtures):
-        self._fx_shop.close_backdoor()
+        self.fixture_shop.close_backdoor()
 
         def registrar(fun):
             meta = self._registered.setdefault(
@@ -332,8 +363,8 @@ class Fitter:
 
     @property
     def uses(self):
-        self._fx_shop.init_local()
-        self._fx_shop.open_backdoor()
+        self.fixture_shop.init_local()
+        self.fixture_shop.open_backdoor()
         return self._uses
 
     def mount(self, mounter=None):

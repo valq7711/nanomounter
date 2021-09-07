@@ -7,7 +7,7 @@ class Foo(BaseFixture):
     def __init__(self):
         pass
 
-    def on_touch(self, ctx):
+    def take_on(self, ctx):
         self._safe_local = types.SimpleNamespace(a='a')
 
 
@@ -47,7 +47,7 @@ def test_deps():
 
 def test_local():
     BaseFixture.__init_request_ctx__()
-    foo.on_touch({})
+    foo.take_on({})
     foo._safe_local.a == 'a'
 
 

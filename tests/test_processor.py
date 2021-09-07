@@ -16,12 +16,12 @@ class Fixture(BaseFixture):
             raise_ = ['', None, None]
         self.raise_ = raise_
 
-    def on_touch(self, ctx):
+    def take_on(self, ctx):
         cb_name, err_cls, stop_final = self.raise_
         self._safe_local = {}
         ctx.shared_data[self.name] = ['touch']
         ctx.shared_data[self.name + '_ph'] = [ctx.phase]
-        if cb_name == 'on_touch':
+        if cb_name == 'take_on':
             raise err_cls(self.name)
 
     def on_output(self, ctx):
@@ -32,11 +32,11 @@ class Fixture(BaseFixture):
         if cb_name == 'on_output':
             raise err_cls(self.name)
 
-    def finalize(self, ctx):
+    def on_finalize(self, ctx):
         cb_name, err_cls, stop_final = self.raise_
         ctx.shared_data[self.name].append('final')
         ctx.shared_data[self.name + '_ph'].append(ctx.phase)
-        if cb_name == 'finalize':
+        if cb_name == 'on_finalize':
             if stop_final:
                 ctx.stop_finalize = True
             raise err_cls(self.name)
@@ -145,11 +145,11 @@ def test_process(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService
         ],
         [
             1, MagicMock(),
-            [('foo', False), ('bar', ['finalize', RuntimeError, True]), ('baz', False)]
+            [('foo', False), ('bar', ['on_finalize', RuntimeError, True]), ('baz', False)]
         ],
         [
             2, MagicMock(),
-            [('foo', False), ('bar', ['on_touch', RuntimeError, None]), ('baz', False)]
+            [('foo', False), ('bar', ['take_on', RuntimeError, None]), ('baz', False)]
         ],
     ],
     indirect=['foo_bar_baz']

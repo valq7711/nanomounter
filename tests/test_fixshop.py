@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 
 class Fixture(BaseFixture):
-    def on_touch(self, ctx):
+    def take_on(self, ctx):
         self._safe_local = {}
 
 
@@ -39,7 +39,7 @@ def test_fixture_dict(shop, foo_bar):
 
 def test_on_checkout(shop, foo_bar):
     foo, bar = foo_bar
-    foo.on_touch({})
+    foo.take_on({})
     cb = MagicMock()
     shop.on_checkout(cb)
     assert shop.foo is foo
@@ -48,7 +48,7 @@ def test_on_checkout(shop, foo_bar):
 
 def test_backdoor(shop, foo_bar):
     foo, bar = foo_bar
-    foo.on_touch({})
+    foo.take_on({})
     cb = MagicMock()
     shop.on_checkout(cb)
     shop.open_backdoor()

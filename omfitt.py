@@ -301,7 +301,7 @@ class BaseProcessor:
         pass
 
 
-class Action:
+class Fitter:
 
     def __init__(self, processor, fx_shop, mounter=None):
         self._mounter = mounter

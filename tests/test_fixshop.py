@@ -1,7 +1,7 @@
 
 import pytest
 import types
-from nanomounter import BaseFixture, FixtureShop
+from orgapyzer import BaseFixture, FixtureShop
 from unittest.mock import MagicMock
 
 

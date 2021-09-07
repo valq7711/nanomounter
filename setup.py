@@ -1,16 +1,16 @@
-from setuptools import setup, find_packages
-import nanomounter
+from setuptools import setup
+import orgapyzer
 
 setup(
-    name="nanomounter",
-    version=nanomounter.__version__,
+    name="orgapyzer",
+    version=orgapyzer.__version__,
     url="https://github.com/valq7711/ombott",
-    license=nanomounter.__license__,
-    author=nanomounter.__author__,
+    license=orgapyzer.__license__,
+    author=orgapyzer.__author__,
     author_email="valq7711@gmail.com",
-    maintainer=nanomounter.__author__,
+    maintainer=orgapyzer.__author__,
     maintainer_email="valq7711@gmail.com",
-    description="Nano mounter",
+    description="Actions mounter",
     platforms="any",
     keywords='python webapplication',
     classifiers=[
@@ -24,7 +24,7 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
         "Topic :: Software Development :: Libraries :: Python Modules",
-    ],
+    ],nn
     python_requires='>=3.7',
-    python_modules = ['nanomounter']
+    python_modules = ['orgapyzer']
 )

@@ -2,7 +2,7 @@
 from _pytest.python_api import raises
 import pytest
 import types
-from nanomounter import BaseFixture, FixtureService, BaseProcessor, FixtureShop
+from orgapyzer import BaseFixture, FixtureService, BaseProcessor, FixtureShop
 from unittest.mock import MagicMock, call, patch
 
 
@@ -13,25 +13,37 @@ class Proc(BaseProcessor):
 
 
 class Fixture(BaseFixture):
-    def __init__(self, name, raise_=False):
+    def __init__(self, name, raise_=None):
         self.name = name
+        if not raise_:
+            raise_ = ['', None, None]
         self.raise_ = raise_
 
     def on_touch(self, ctx):
+        cb_name, err_cls, stop_final = self.raise_
         self._safe_local = {}
         ctx.shared_data[self.name] = ['touch']
         ctx.shared_data[self.name + '_ph'] = [ctx.phase]
+        if cb_name == 'on_touch':
+            raise err_cls(self.name)
 
     def on_output(self, ctx):
+        cb_name, err_cls, stop_final = self.raise_
         ctx.shared_data[self.name].append('out')
         ctx.shared_data[self.name + '_ph'].append(ctx.phase)
         ctx.output.append(self.name)
-        if self.raise_:
-            raise RuntimeError(self.name)
+        if cb_name == 'on_output':
+            raise err_cls(self.name)
 
     def finalize(self, ctx):
+        cb_name, err_cls, stop_final = self.raise_
         ctx.shared_data[self.name].append('final')
         ctx.shared_data[self.name + '_ph'].append(ctx.phase)
+        if cb_name == 'finalize':
+            if stop_final:
+                ctx.stop_finalize = True
+            raise err_cls(self.name)
+
 
 
 @pytest.fixture
@@ -73,7 +85,6 @@ def shop(foo_bar_baz, fx_service):
 
 @pytest.fixture
 def fx_proc(fx_service):
-    #patch('nanomounter.RouteContext', autospec=True).start()
     return Proc(fx_service, {})
 
 @pytest.fixture
@@ -125,31 +136,65 @@ def test_process(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService
 
 
 @pytest.mark.parametrize(
-    'arg,foo_bar_baz',
+    'case, arg, foo_bar_baz',
     [
         [
-            MagicMock(),
-            [('foo', False), ('bar', True), ('baz', False)]
-        ]
+            0, MagicMock(),
+            [('foo', False), ('bar', ['on_output', RuntimeError, None]), ('baz', False)]
+        ],
+        [
+            1, MagicMock(),
+            [('foo', False), ('bar', ['finalize', RuntimeError, True]), ('baz', False)]
+        ],
+        [
+            2, MagicMock(),
+            [('foo', False), ('bar', ['on_touch', RuntimeError, None]), ('baz', False)]
+        ],
     ],
     indirect=['foo_bar_baz']
 )
-def test_process_err(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService, arg):
+def test_process_err(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService, arg, case):
+
+    def rt(ctx, ex):
+        ctx.shared_data['rt-handler'] = True
+        raise KeyError()
+
     fx_proc.exception_handlers = {
-        RuntimeError: lambda ctx: 'runerr'
+        RuntimeError: rt,
+        KeyError: lambda ctx, ex: 'kerr'
     }
-    arg = MagicMock()
     res = handler(arg)
-    assert res == 'runerr'
-    ctx = fx_proc._local.ctx
-    assert not ctx.successful
-    assert not fx_service._safe_local.involved
-    assert ctx.shared_data['foo_ph'] == ['request', 'output', 'output']
-    assert ctx.shared_data['bar_ph'] == ['request', 'output', 'output']
-    assert ctx.shared_data['foo'] == ['touch', 'out', 'final']
-    assert ctx.shared_data['bar'] == ['touch', 'out', 'final']
-    assert ctx.shared_data['baz'] == ['touch', 'final']  # break output flow on bar
+    assert res == 'kerr'
+    ctx = fx_proc.ctx
+    assert ctx.shared_data['rt-handler']
 
-
+    if case == 0:
+        assert not ctx.successful
+        assert not fx_service._safe_local.involved
+        assert ctx.shared_data['foo_ph'] == ['request', 'output', 'output']
+        assert ctx.shared_data['bar_ph'] == ['request', 'output', 'output']
+        assert ctx.shared_data['baz_ph'] == ['run', 'output']
+        assert ctx.shared_data['foo'] == ['touch', 'out', 'final']
+        assert ctx.shared_data['bar'] == ['touch', 'out', 'final']
+        assert ctx.shared_data['baz'] == ['touch', 'final']  # break output flow on bar
+    if case == 1:
+        assert ctx.successful
+        assert [*fx_service._safe_local.involved] == [foo_bar_baz[-1]]
+        assert ctx.shared_data['foo_ph'] == ['request', 'output', 'finalize']
+        assert ctx.shared_data['bar_ph'] == ['request', 'output', 'finalize']
+        assert ctx.shared_data['baz_ph'] == ['run', 'output']
+        assert ctx.shared_data['foo'] == ['touch', 'out', 'final']
+        assert ctx.shared_data['bar'] == ['touch', 'out', 'final']
+        assert ctx.shared_data['baz'] == ['touch', 'out']  # break finalize flow on bar
+    if case == 2:
+        assert not ctx.successful
+        assert not fx_service._safe_local.involved  # finalize run anyway
+        assert ctx.shared_data['foo_ph'] == ['request', 'request']
+        assert ctx.shared_data['bar_ph'] == ['request', 'request']
+        assert ctx.shared_data['foo'] == ['touch', 'final']
+        assert ctx.shared_data['bar'] == ['touch', 'final']
+        # break at init-flow, so no run at all,
+        # but baz touched while running core-handler
+        assert 'baz' not in ctx.shared_data
 
 

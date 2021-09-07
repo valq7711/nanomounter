@@ -1,7 +1,7 @@
 
 import pytest
 import types
-from nanomounter import BaseFixture, FixtureService
+from orgapyzer import BaseFixture, FixtureService
 from unittest.mock import MagicMock, call
 
 

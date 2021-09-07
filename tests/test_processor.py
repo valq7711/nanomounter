@@ -1,6 +1,6 @@
 
 import pytest
-from omfitt import BaseFixture, FixtureService, BaseProcessor, FixtureShop
+from omfitt import BaseFixture, FixtureService, BaseProcessor, FixtureShop, ProcessPhase
 from unittest.mock import MagicMock
 
 
@@ -121,7 +121,7 @@ def test_process(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService
         assert res == ['a', 'foo', 'bar', 'baz']
         arg.assert_called_with('core')
         assert ctx.shared_data['baz'] == ['touch', 'out', 'final']
-        assert ctx.shared_data['baz_ph'] == ['run', 'output', 'finalize']
+        assert ctx.shared_data['baz_ph'] == [ProcessPhase.RUN, ProcessPhase.OUTPUT, ProcessPhase.FINALIZE]
     else:
         assert res == ['a', 'foo', 'bar']
 
@@ -129,8 +129,8 @@ def test_process(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService
     assert ctx.shared_data['foo'] == ['touch', 'out', 'final']
     assert ctx.shared_data['bar'] == ['touch', 'out', 'final']
 
-    assert ctx.shared_data['foo_ph'] == ['request', 'output', 'finalize']
-    assert ctx.shared_data['bar_ph'] == ['request', 'output', 'finalize']
+    assert ctx.shared_data['foo_ph'] == [ProcessPhase.SETUP, ProcessPhase.OUTPUT, ProcessPhase.FINALIZE]
+    assert ctx.shared_data['bar_ph'] == [ProcessPhase.SETUP, ProcessPhase.OUTPUT, ProcessPhase.FINALIZE]
 
     assert fx_proc._local.fixtures == foo_bar_baz[:-1]
     assert not fx_service._safe_local.involved
@@ -169,29 +169,32 @@ def test_process_err(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureSer
     ctx = fx_proc.ctx
     assert ctx.shared_data['rt-handler']
 
+    sof = [ProcessPhase.SETUP, ProcessPhase.OUTPUT, ProcessPhase.FINALIZE]
+    soo = [ProcessPhase.SETUP, ProcessPhase.OUTPUT, ProcessPhase.OUTPUT]
+
     if case == 0:
         assert not ctx.successful
         assert not fx_service._safe_local.involved
-        assert ctx.shared_data['foo_ph'] == ['request', 'output', 'output']
-        assert ctx.shared_data['bar_ph'] == ['request', 'output', 'output']
-        assert ctx.shared_data['baz_ph'] == ['run', 'output']
+        assert ctx.shared_data['foo_ph'] == soo
+        assert ctx.shared_data['bar_ph'] == soo
+        assert ctx.shared_data['baz_ph'] == [ProcessPhase.RUN, ProcessPhase.OUTPUT]
         assert ctx.shared_data['foo'] == ['touch', 'out', 'final']
         assert ctx.shared_data['bar'] == ['touch', 'out', 'final']
         assert ctx.shared_data['baz'] == ['touch', 'final']  # break output flow on bar
     if case == 1:
         assert ctx.successful
         assert [*fx_service._safe_local.involved] == [foo_bar_baz[-1]]
-        assert ctx.shared_data['foo_ph'] == ['request', 'output', 'finalize']
-        assert ctx.shared_data['bar_ph'] == ['request', 'output', 'finalize']
-        assert ctx.shared_data['baz_ph'] == ['run', 'output']
+        assert ctx.shared_data['foo_ph'] == sof
+        assert ctx.shared_data['bar_ph'] == sof
+        assert ctx.shared_data['baz_ph'] == [ProcessPhase.RUN, ProcessPhase.OUTPUT]
         assert ctx.shared_data['foo'] == ['touch', 'out', 'final']
         assert ctx.shared_data['bar'] == ['touch', 'out', 'final']
         assert ctx.shared_data['baz'] == ['touch', 'out']  # break finalize flow on bar
     if case == 2:
         assert not ctx.successful
         assert not fx_service._safe_local.involved  # finalize run anyway
-        assert ctx.shared_data['foo_ph'] == ['request', 'request']
-        assert ctx.shared_data['bar_ph'] == ['request', 'request']
+        assert ctx.shared_data['foo_ph'] == [ProcessPhase.SETUP]*2
+        assert ctx.shared_data['bar_ph'] == [ProcessPhase.SETUP]*2
         assert ctx.shared_data['foo'] == ['touch', 'final']
         assert ctx.shared_data['bar'] == ['touch', 'final']
         # break at init-flow, so no run at all,

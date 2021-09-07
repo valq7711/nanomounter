@@ -31,7 +31,7 @@ class RouteContext:
         self.exception = None
         self.finalize_exceptions = []
         self.successful = True
-        self.phase = None
+        self.phase: ProcessPhase = None
         self.stop_finalize = False
 
 
@@ -281,13 +281,13 @@ class BaseProcessor:
         fs = self._fixture_service
         fs.init(ctx)
         try:
-            ctx.phase = 'request'
+            ctx.phase = ProcessPhase.SETUP
             fs.use(*local.fixtures, is_expanded=True)
-            ctx.phase = 'run'
+            ctx.phase = ProcessPhase.RUN
             ctx.output = local.fun(*args, **kwargs)
-            ctx.phase = 'output'
+            ctx.phase = ProcessPhase.OUTPUT
             fs.on_output()
-            ctx.phase = 'finalize'
+            ctx.phase = ProcessPhase.FINALIZE
             return ctx.output
         except BaseException as ex:
             ctx.exception = ex

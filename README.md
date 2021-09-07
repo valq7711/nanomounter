@@ -1,2 +1,2 @@
 # omfitt (One More FITTer)
-Actions mounter for py4web
+Actions fitter for py4web

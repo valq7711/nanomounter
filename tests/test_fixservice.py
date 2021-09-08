@@ -1,6 +1,6 @@
 
 import pytest
-from omfitt import BaseFixture, FixtureService
+from omfitt import BaseFixture, FixtureService, FixtureShop
 from unittest.mock import MagicMock, call
 
 
@@ -36,12 +36,12 @@ def foo_bar_baz_deps(foo_bar_baz):
 
 @pytest.fixture
 def fx_service():
-    return FixtureService(reverse_postproc=False)
+    return FixtureService(FixtureShop({}), reverse_postproc=False)
 
 
 def test_expand_deps_nodeps(fx_service: FixtureService, foo_bar_baz):
     foo, bar, baz = foo_bar_baz
-    assert fx_service.expand_deps(*reversed(foo_bar_baz)) == [*reversed([foo, bar, baz])]
+    assert fx_service.expand_deps(*foo_bar_baz) == [foo, bar, baz]
 
 
 def test_expand_deps(fx_service: FixtureService, foo_bar_baz_deps):
@@ -52,7 +52,7 @@ def test_expand_deps(fx_service: FixtureService, foo_bar_baz_deps):
 def test_process_flow(fx_service: FixtureService, foo_bar_baz):
     foo, bar, baz = foo_bar_baz
     ctx = MagicMock()
-    fx_service.init(ctx)
+    fx_service.init(ctx, {})
     assert not ctx.called
     fx_service.use(*foo_bar_baz)
     assert ctx.mock_calls == [call(f.name) for f in foo_bar_baz]
@@ -69,7 +69,7 @@ def test_process_flow(fx_service: FixtureService, foo_bar_baz):
 def test_process_flow_deps(fx_service: FixtureService, foo_bar_baz_deps):
     foo, bar, baz = foo_bar_baz_deps
     ctx = MagicMock()
-    fx_service.init(ctx)
+    fx_service.init(ctx, {})
     assert not ctx.called
     fx_service.use(baz)
     assert ctx.mock_calls == [call(f.name) for f in foo_bar_baz_deps]

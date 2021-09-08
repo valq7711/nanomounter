@@ -65,12 +65,7 @@ def foo_bar_baz_deps(foo_bar_baz):
 
 
 @pytest.fixture
-def fx_service():
-    return FixtureService(reverse_postproc=False)
-
-
-@pytest.fixture
-def shop(foo_bar_baz, fx_service):
+def shop(foo_bar_baz):
     foo_, bar_, baz_ = foo_bar_baz
 
     @FixtureShop.make_from
@@ -79,8 +74,12 @@ def shop(foo_bar_baz, fx_service):
         bar = bar_
         baz = baz_
 
-    Shop.on_checkout(fx_service.use)
     return Shop
+
+
+@pytest.fixture
+def fx_service(shop):
+    return FixtureService(shop, reverse_postproc=False)
 
 
 @pytest.fixture

@@ -197,7 +197,13 @@ class FixtureShop:
 
 class FixtureService(LocalStorage):
 
-    def init(self, ctx):
+    def __init__(self, reverse_postproc=True):
+        self._reverse_postproc_order = reverse_postproc
+
+    def init(self, ctx, reverse_postproc=None):
+        if reverse_postproc is not None:
+            self._reverse_postproc_order = reverse_postproc
+
         local = self._safe_local = types.SimpleNamespace()
         local.involved = OrderedUniqSet()
         local.ctx = ctx
@@ -227,6 +233,8 @@ class FixtureService(LocalStorage):
         local = self._safe_local
         ctx = local.ctx
         involved = local.involved
+        if self._reverse_postproc_order:
+            involved = reversed(involved)
         [obj.on_output(ctx) for obj in involved]
 
     def finalize(self):
@@ -234,8 +242,12 @@ class FixtureService(LocalStorage):
         involved = local.involved
         if not involved:
             return True
+        if self._reverse_postproc_order:
+            involved_ = [*reversed(involved)]
+        else:
+            involved_ = [*involved]
         ctx = local.ctx
-        [involved.pop(f) and f.on_finalize(ctx) for f in [*involved]]
+        [involved.pop(f) and f.on_finalize(ctx) for f in involved_]
 
 
 class BaseProcessor:

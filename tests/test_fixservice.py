@@ -36,7 +36,7 @@ def foo_bar_baz_deps(foo_bar_baz):
 
 @pytest.fixture
 def fx_service():
-    return FixtureService()
+    return FixtureService(reverse_postproc=False)
 
 
 def test_expand_deps_nodeps(fx_service: FixtureService, foo_bar_baz):

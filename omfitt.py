@@ -402,7 +402,6 @@ class FixtureHolder:
 
 
 class Fitter:
-
     def __init__(self, processor: BaseProcessor, shops,
                  mounter=None):
         self._mounter = mounter

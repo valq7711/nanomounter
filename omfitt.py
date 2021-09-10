@@ -10,6 +10,15 @@ __copyright__ = "Copyright (C) 2021 Valery Kucherov"
 __license__ = "MIT"
 
 
+class OrderedUniqSet(dict):
+    add = lambda s, *items: dict.update(s, {it: True for it in items})
+
+    def __init__(self, items=None):
+        super().__init__()
+        if items:
+            self.add(*items)
+
+
 class ProcessPhase(str, enum.Enum):
     SETUP = 'setup'
     RUN = 'run'
@@ -86,7 +95,6 @@ class BaseFixture(LocalStorage):
 
             Not called if an exception is raised before,
             i.e. from previous try-to-taken fixture.
-
         '''
         pass
 
@@ -94,7 +102,6 @@ class BaseFixture(LocalStorage):
         ''' Called after successful core-function run.
 
             Not called if an exception is raised before.
-
         '''
         pass
 
@@ -102,7 +109,6 @@ class BaseFixture(LocalStorage):
         ''' Called at the end of process.
 
             Not called if an exception is raised before with ctx.stop_finalize set to True.
-
         '''
         pass
 
@@ -111,7 +117,6 @@ class BaseFixture(LocalStorage):
 
         self.some_fixture = self.use_fixtures(SomeFixture(...))
         foo, bar = self.use_fixtures(Foo(...), Bar(...))
-
         '''
         deps = self.__prerequisites__
         deps.extend([
@@ -137,15 +142,6 @@ class BaseFixture(LocalStorage):
 
 
 BaseFixture.__track_deps_if_instance__.append(BaseFixture)
-
-
-class OrderedUniqSet(dict):
-    add = lambda s, *items: dict.update(s, {it: True for it in items})
-
-    def __init__(self, items=None):
-        super().__init__()
-        if items:
-            self.add(*items)
 
 
 class FixtureStorage(UserDict):
@@ -179,15 +175,23 @@ class FixtureShop:
         self.open(fixtures_dict)
         self._on_checkout = None
 
+    @property
+    def fixtures(self):
+        return self._local.fixtures
+
+    @property
+    def striped_fixtures(self):
+        ret = {
+            k: f if not isinstance(f, FixtureHolder) else f.value
+            for k, f in self.fixtures.items()
+        }
+        return ret
+
     def open(self, fixtures):
         self._local.opened = True
         self._local.backdoor_opened = False
         if fixtures is not None:
             self._local.fixtures = FixtureStorage(fixtures)
-
-    @property
-    def fixtures(self):
-        return self._local.fixtures
 
     def close(self):
         self._local.opened = False
@@ -197,13 +201,6 @@ class FixtureShop:
 
     def close_backdoor(self):
         self._local.backdoor_opened = False
-
-    @staticmethod
-    def _get_fixtures(src_class):
-        return {
-            k: v for k, v in src_class.__dict__.items()
-            if not k.startswith('_')
-        }
 
     def on_checkout(self, cb):
         self._on_checkout = cb
@@ -217,13 +214,12 @@ class FixtureShop:
             self._on_checkout(f)
         return f
 
-    @property
-    def striped_fixtures(self):
-        ret = {
-            k: f if not isinstance(f, FixtureHolder) else f.value
-            for k, f in self.fixtures.items()
+    @staticmethod
+    def _get_fixtures(src_class):
+        return {
+            k: v for k, v in src_class.__dict__.items()
+            if not k.startswith('_')
         }
-        return ret
 
 
 class _DepsCache(dict):
@@ -239,12 +235,6 @@ class FixtureService(LocalStorage):
         self._reverse_postproc_order = reverse_postproc
         self._shops = set()
 
-    def serve(self, shop):
-        if shop in self._shops:
-            return
-        shop.on_checkout(self.use)
-        self._shops.add(shop)
-
     def init(self, ctx, fitter_ctx, reverse_postproc=None):
         if reverse_postproc is not None:
             self._reverse_postproc_order = reverse_postproc
@@ -254,6 +244,12 @@ class FixtureService(LocalStorage):
         local.ctx = ctx
         local.fitter_ctx = fitter_ctx
         fitter_ctx.setdefault('fixtures_deps_cache', _DepsCache())
+
+    def serve(self, shop):
+        if shop in self._shops:
+            return
+        shop.on_checkout(self.use)
+        self._shops.add(shop)
 
     @staticmethod
     def expand_deps(*fixtures):
@@ -316,12 +312,6 @@ class BaseProcessor:
     def ctx(self):
         return self._local.ctx
 
-    def init_context(self):
-        pass
-
-    def default_exception_handler(self, ctx, ex):
-        raise
-
     def make_core_handler(self, fun, front_fixtures, shop_fixtures_map, fitter_ctx):
         expanded_fixtures = self._fixture_service.expand_deps(*front_fixtures)
 
@@ -336,6 +326,29 @@ class BaseProcessor:
             return self.process(*args, **kwargs)
 
         return handler
+
+    def process(self, *args, **kwargs):
+        try:
+            ret = self.process_inner(*args, **kwargs)
+            if self._local.ctx.finalize_exceptions:
+                self.process_finalize_exceptions()
+            return ret
+        except BaseException as cur_ex:
+            default_handler = self.default_exception_handler
+            handler = self.exception_handlers.get(cur_ex.__class__, default_handler)
+            max_rehandlered = 10
+            ex_stack = [cur_ex]
+            while len(ex_stack) < max_rehandlered:
+                try:
+                    return handler(self._local.ctx, cur_ex)
+                except BaseException as ex:
+                    next_handler = self.exception_handlers.get(ex.__class__, default_handler)
+                    if ex in ex_stack:
+                        raise
+                    ex_stack.append(cur_ex)
+                    cur_ex = ex
+                    handler = next_handler
+            raise RuntimeError('Max rehandlered exceeded')
 
     def process_inner(self, *args, **kwargs):
         local = self._local
@@ -370,28 +383,11 @@ class BaseProcessor:
                     if ctx.stop_finalize:
                         raise ex
 
-    def process(self, *args, **kwargs):
-        try:
-            ret = self.process_inner(*args, **kwargs)
-            if self._local.ctx.finalize_exceptions:
-                self.process_finalize_exceptions()
-            return ret
-        except BaseException as cur_ex:
-            default_handler = self.default_exception_handler
-            handler = self.exception_handlers.get(cur_ex.__class__, default_handler)
-            max_rehandlered = 10
-            ex_stack = [cur_ex]
-            while len(ex_stack) < max_rehandlered:
-                try:
-                    return handler(self._local.ctx, cur_ex)
-                except BaseException as ex:
-                    next_handler = self.exception_handlers.get(ex.__class__, default_handler)
-                    if ex in ex_stack:
-                        raise
-                    ex_stack.append(cur_ex)
-                    cur_ex = ex
-                    handler = next_handler
-            raise RuntimeError('Max rehandlered exceeded')
+    def init_context(self):
+        pass
+
+    def default_exception_handler(self, ctx, ex):
+        raise
 
     def process_finalize_exceptions(self):
         pass
@@ -409,7 +405,6 @@ class Fitter:
 
     def __init__(self, processor: BaseProcessor, shops,
                  mounter=None):
-
         self._mounter = mounter
         self._processor = processor
         self.shops = shops
@@ -420,6 +415,11 @@ class Fitter:
         if len(self.shops) > 1:
             raise AttributeError('`shop` is inaccessible since there is more than one shop')
         return self.shops[0]
+
+    @property
+    def uses(self):
+        [[s.open(None), s.open_backdoor()] for s in self.shops]
+        return self._uses
 
     def _uses(self, *fixtures):
         [[s.close_backdoor(), s.close()] for s in self.shops]
@@ -432,28 +432,6 @@ class Fitter:
             return fun
 
         return registrar
-
-    def __call__(self, *args, **kw):
-        def registrar(fun):
-            meta = self._registered.setdefault(
-                fun, types.SimpleNamespace(route_args=[], fixtures=[])
-            )
-            meta.route_args.append((args, kw))
-            return fun
-        return registrar
-
-    @property
-    def uses(self):
-        [[s.open(None), s.open_backdoor()] for s in self.shops]
-        return self._uses
-
-    @staticmethod
-    def _get_striped_fixtures(fixtures):
-        ret = [
-            f if not isinstance(f, FixtureHolder) else f.value
-            for f in fixtures
-        ]
-        return ret
 
     def mount(self, mounter=None):
         mounter = mounter or self._mounter
@@ -468,3 +446,19 @@ class Fitter:
             for args, kw in meta.route_args:
                 mounter(*args, **kw)(h)
 
+    def __call__(self, *args, **kw):
+        def registrar(fun):
+            meta = self._registered.setdefault(
+                fun, types.SimpleNamespace(route_args=[], fixtures=[])
+            )
+            meta.route_args.append((args, kw))
+            return fun
+        return registrar
+
+    @staticmethod
+    def _get_striped_fixtures(fixtures):
+        ret = [
+            f if not isinstance(f, FixtureHolder) else f.value
+            for f in fixtures
+        ]
+        return ret

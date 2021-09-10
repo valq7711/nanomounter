@@ -79,7 +79,9 @@ def shop(foo_bar_baz):
 
 @pytest.fixture
 def fx_service(shop):
-    return FixtureService(shop, reverse_postproc=False)
+    fs = FixtureService(reverse_postproc=False)
+    fs.serve(shop)
+    return fs
 
 
 @pytest.fixture
@@ -104,7 +106,7 @@ def mounter():
 
 @pytest.fixture
 def action(fx_proc: Proc, foo_bar_baz, shop, mounter):
-    return Fitter(fx_proc, shop, mounter)
+    return Fitter(fx_proc, [shop], mounter)
 
 
 @pytest.fixture

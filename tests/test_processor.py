@@ -76,9 +76,12 @@ def shop(foo_bar_baz):
 
     return Shop
 
+
 @pytest.fixture
 def fx_service(shop):
-    return FixtureService(shop, reverse_postproc=False)
+    fs = FixtureService(reverse_postproc=False)
+    fs.serve(shop)
+    return fs
 
 
 @pytest.fixture
@@ -95,7 +98,7 @@ def handler(fx_proc: Proc, foo_bar_baz, shop):
             arg('core')
             shop.baz
         return ['a']
-    return fx_proc.make_core_handler(core, [foo_, bar_], shop.fixtures)
+    return fx_proc.make_core_handler(core, [foo_, bar_], {shop: shop.fixtures}, {})
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@ import threading
 import functools
 import types
 import enum
+from collections import UserDict
 
 __version__ = '0.0.1'
 __author__ = "Valery Kucherov <valq7711@gmail.com>"
@@ -44,7 +45,7 @@ class LocalStorage:
             ret = self.__request_master_ctx__.request_ctx[self]
         except KeyError as err:
             msg = (
-                'py4web hint: this is an attempt to access an uninitialized '
+                'fitter hint: this is an attempt to access an uninitialized '
                 'thread-local data of {}'
             ).format(self)
             raise RuntimeError(msg) from err
@@ -78,7 +79,6 @@ class BaseFixture(LocalStorage):
                     and it not in deps
                 ):
                     deps.append(it)
-        self._with_deps_cached = None
         return self
 
     def take_on(self, ctx):
@@ -117,7 +117,6 @@ class BaseFixture(LocalStorage):
         deps.extend([
             f for f in fixtures if f not in deps
         ])
-        self._with_deps_cached = None
         if len(fixtures) == 1:
             return fixtures[0]
         return fixtures
@@ -128,20 +127,13 @@ class BaseFixture(LocalStorage):
 
            [independent ... dependent]
         '''
-        if self._with_deps_cached is not None:
-            return self._with_deps_cached
-        fixtures = []
-        reversed_fixtures = []
-        stack = [self]
-        while stack:
-            fixture = stack.pop()
-            reversed_fixtures.append(fixture)
-            stack.extend(getattr(fixture, "__prerequisites__", ()))
-        for fixture in reversed(reversed_fixtures):
-            if fixture not in fixtures:
-                fixtures.append(fixture)
-        self._with_deps_cached = tuple(fixtures)
-        return fixtures
+        ret = OrderedUniqSet()
+        for f in self.__prerequisites__:
+            if isinstance(f, FixtureHolder):
+                f = f.value
+            ret.add(*f.with_deps)
+        ret.add(self)
+        return ret
 
 
 BaseFixture.__track_deps_if_instance__.append(BaseFixture)
@@ -156,6 +148,25 @@ class OrderedUniqSet(dict):
             self.add(*items)
 
 
+class FixtureStorage(UserDict):
+    def __init__(self, fixtures_dict=None):
+        super().__init__()
+        self.data = fixtures_dict or {}
+
+    def __setitem__(self, k, v):
+        f = self.data[k]
+        if not isinstance(f, FixtureHolder):
+            raise TypeError(f'Fixture `{k}` must be FixtureHolder instance')
+        f.set(v)
+
+    def __setattr__(self, k, v):
+        if k == 'data':
+            return object.__setattr__(self, k, v)
+        if k not in self.data:
+            raise AttributeError(f'There is no `{k}` fixture')
+        return self.__setitem__(k, v)
+
+
 class FixtureShop:
 
     @classmethod
@@ -165,23 +176,27 @@ class FixtureShop:
 
     def __init__(self, fixtures_dict):
         self._local = threading.local()
-        self.init_local(fixtures_dict)
+        self.open(fixtures_dict)
         self._on_checkout = None
 
-    def init_local(self, fixtures):
+    def open(self, fixtures):
+        self._local.opened = True
         self._local.backdoor_opened = False
         if fixtures is not None:
-            self._local.fixtures = fixtures
+            self._local.fixtures = FixtureStorage(fixtures)
+
+    @property
+    def fixtures(self):
+        return self._local.fixtures
+
+    def close(self):
+        self._local.opened = False
 
     def open_backdoor(self):
         self._local.backdoor_opened = True
 
     def close_backdoor(self):
         self._local.backdoor_opened = False
-
-    @property
-    def fixtures(self):
-        return self._local.fixtures
 
     @staticmethod
     def _get_fixtures(src_class):
@@ -194,27 +209,51 @@ class FixtureShop:
         self._on_checkout = cb
 
     def __getattr__(self, k):
-        f = self._local.fixtures[k]
-        if not self._local.backdoor_opened:
+        local = self._local
+        if not local.opened:
+            raise RuntimeError('Shop is closed')
+        f = local.fixtures[k]
+        if not local.backdoor_opened:
             self._on_checkout(f)
         return f
+
+    @property
+    def striped_fixtures(self):
+        ret = {
+            k: f if not isinstance(f, FixtureHolder) else f.value
+            for k, f in self.fixtures.items()
+        }
+        return ret
+
+
+class _DepsCache(dict):
+    def __missing__(self, f):
+        v = f.with_deps
+        self.__setitem__(f, v)
+        return v
 
 
 class FixtureService(LocalStorage):
 
-    def __init__(self, fixture_shop, reverse_postproc=True):
+    def __init__(self, reverse_postproc=True):
         self._reverse_postproc_order = reverse_postproc
-        self._fixture_shop = fixture_shop
-        self._fixture_shop.on_checkout(self.use)
+        self._shops = set()
 
-    def init(self, ctx, shop_fixtures, reverse_postproc=None):
+    def serve(self, shop):
+        if shop in self._shops:
+            return
+        shop.on_checkout(self.use)
+        self._shops.add(shop)
+
+    def init(self, ctx, fitter_ctx, reverse_postproc=None):
         if reverse_postproc is not None:
             self._reverse_postproc_order = reverse_postproc
 
         local = self._safe_local = types.SimpleNamespace()
         local.involved = OrderedUniqSet()
         local.ctx = ctx
-        self._fixture_shop.init_local(shop_fixtures)
+        local.fitter_ctx = fitter_ctx
+        fitter_ctx.setdefault('fixtures_deps_cache', _DepsCache())
 
     @staticmethod
     def expand_deps(*fixtures):
@@ -230,8 +269,9 @@ class FixtureService(LocalStorage):
         if is_expanded:
             not_involved.add(*[f for f in fixtures if f not in involved])
         else:
+            deps_cache = local.fitter_ctx['fixtures_deps_cache']
             [
-                not_involved.add(*f.with_deps)
+                not_involved.add(*deps_cache[f])
                 for f in fixtures if f not in involved
             ]
         involved.add(*not_involved)
@@ -269,7 +309,8 @@ class BaseProcessor:
         self._local.ctx = None
         self._local.fun = None
         self._local.fixtures = None
-        self._local.shop_fixtures = None
+        self._local.shop_fixtures_map = None
+        self._local.fitter_ctx = None  # mounted context
 
     @property
     def ctx(self):
@@ -281,7 +322,7 @@ class BaseProcessor:
     def default_exception_handler(self, ctx, ex):
         raise
 
-    def make_core_handler(self, fun, front_fixtures, shop_fixtures):
+    def make_core_handler(self, fun, front_fixtures, shop_fixtures_map, fitter_ctx):
         expanded_fixtures = self._fixture_service.expand_deps(*front_fixtures)
 
         @functools.wraps(fun)
@@ -290,7 +331,8 @@ class BaseProcessor:
             local.ctx = None
             local.fun = fun
             local.fixtures = expanded_fixtures
-            local.shop_fixtures = shop_fixtures
+            local.shop_fixtures_map = shop_fixtures_map
+            local.fitter_ctx = fitter_ctx
             return self.process(*args, **kwargs)
 
         return handler
@@ -301,12 +343,14 @@ class BaseProcessor:
         self.init_context()
         ctx = local.ctx
         fs = self._fixture_service
-        fs.init(ctx, local.shop_fixtures)
+        fs.init(ctx, local.fitter_ctx)
+        opened_shops = [[shop.open(fixtures), shop][-1] for shop, fixtures in local.shop_fixtures_map.items()]
         try:
             ctx.phase = ProcessPhase.SETUP
             fs.use(*local.fixtures, is_expanded=True)
             ctx.phase = ProcessPhase.RUN
             ctx.output = local.fun(*args, **kwargs)
+            [opened_shops.pop().close() for _ in [*opened_shops]]
             ctx.phase = ProcessPhase.OUTPUT
             fs.on_output()
             ctx.phase = ProcessPhase.FINALIZE
@@ -316,6 +360,7 @@ class BaseProcessor:
             ctx.successful = getattr(ex, 'successful', False)
             raise
         finally:
+            [opened_shops.pop().close() for _ in [*opened_shops]]
             while True:
                 try:
                     if fs.finalize():
@@ -362,16 +407,22 @@ class FixtureHolder:
 
 class Fitter:
 
-    def __init__(self, processor: BaseProcessor, fixture_shop: FixtureShop,
+    def __init__(self, processor: BaseProcessor, shops,
                  mounter=None):
 
         self._mounter = mounter
         self._processor = processor
-        self.fixture_shop = fixture_shop
+        self.shops = shops
         self._registered = {}
 
+    @property
+    def shop(self):
+        if len(self.shops) > 1:
+            raise AttributeError('`shop` is inaccessible since there is more than one shop')
+        return self.shops[0]
+
     def _uses(self, *fixtures):
-        self.fixture_shop.close_backdoor()
+        [[s.close_backdoor(), s.close()] for s in self.shops]
 
         def registrar(fun):
             meta = self._registered.setdefault(
@@ -393,31 +444,27 @@ class Fitter:
 
     @property
     def uses(self):
-        self.fixture_shop.init_local(None)
-        self.fixture_shop.open_backdoor()
+        [[s.open(None), s.open_backdoor()] for s in self.shops]
         return self._uses
 
     @staticmethod
     def _get_striped_fixtures(fixtures):
-        if isinstance(fixtures, (list, tuple)):
-            ret = [
-                f if not isinstance(f, FixtureHolder) else f.value
-                for f in fixtures
-            ]
-        elif isinstance(fixtures, dict):
-            ret = {
-                k: f if not isinstance(f, FixtureHolder) else f.value
-                for k, f in fixtures.items()
-            }
+        ret = [
+            f if not isinstance(f, FixtureHolder) else f.value
+            for f in fixtures
+        ]
         return ret
 
     def mount(self, mounter=None):
         mounter = mounter or self._mounter
         make_handler = self._processor.make_core_handler
-        shop_fixtures = self._get_striped_fixtures(self.fixture_shop.fixtures)
+        shops_striped_fixtures = {
+            s: s.striped_fixtures
+            for s in self.shops
+        }
+        fitter_ctx = {}
         for fun, meta in self._registered.items():
-            fixtures = self._get_striped_fixtures(meta.fixtures)
-            h = make_handler(fun, fixtures, shop_fixtures)
+            h = make_handler(fun, meta.fixtures, shops_striped_fixtures, fitter_ctx)
             for args, kw in meta.route_args:
                 mounter(*args, **kw)(h)
 

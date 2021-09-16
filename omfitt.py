@@ -74,6 +74,14 @@ class LocalStorage:
         return storage
 
 
+class BubbleWrap(LocalStorage):
+    def setup(self):
+        pass
+
+    def cleanup(self, route_ctx):
+        pass
+
+
 class BaseFixture(LocalStorage):
     __track_deps_if_instance__ = []
 
@@ -302,6 +310,7 @@ class BaseProcessor:
         self._fixture_service: FixtureService = fixture_service
         self.exception_handlers = exception_handlers or {}
         self._local = threading.local()
+        self._local.bubble_wrap = None
         self._local.ctx = None
         self._local.fun = None
         self._local.fixtures = None
@@ -312,20 +321,30 @@ class BaseProcessor:
     def ctx(self):
         return self._local.ctx
 
-    def make_core_handler(self, fun, front_fixtures, shop_fixtures_map, fitter_ctx):
+    def make_core_handler(self, fun, bubble_wrap, front_fixtures, shop_fixtures_map, fitter_ctx):
         expanded_fixtures = self._fixture_service.expand_deps(*front_fixtures)
+        process = self.bubble_wrpapped_process if bubble_wrap else self.process
 
         @functools.wraps(fun)
         def handler(*args, **kwargs):
             local = self._local
+            local.bubble_wrap = bubble_wrap
             local.ctx = None
             local.fun = fun
             local.fixtures = expanded_fixtures
             local.shop_fixtures_map = shop_fixtures_map
             local.fitter_ctx = fitter_ctx
-            return self.process(*args, **kwargs)
+            return process(*args, **kwargs)
 
         return handler
+
+    def bubble_wrpapped_process(self, *args, **kwargs):
+        bubble_wrap = self._local.bubble_wrap
+        bubble_wrap.setup()
+        try:
+            return self.process(*args, **kwargs)
+        finally:
+            bubble_wrap.cleanup(self._local.ctx)
 
     def process(self, *args, **kwargs):
         try:
@@ -370,7 +389,7 @@ class BaseProcessor:
             return ctx.output
         except BaseException as ex:
             ctx.exception = ex
-            ctx.successful = getattr(ex, 'successful', False)
+            ctx.successful = not getattr(ex, 'is_error', True)
             raise
         finally:
             [opened_shops.pop().close() for _ in [*opened_shops]]
@@ -403,25 +422,26 @@ class FixtureHolder:
 
 class Fitter:
     def __init__(self, processor: BaseProcessor, shops,
-                 mounter=None):
-        self._mounter = mounter
+                 mounter=None, bubble_wrap = None):
+        self.mounter = mounter
+        self.bubble_wrap = bubble_wrap
         self._processor = processor
-        self.shops = shops
+        self._shops = shops
         self._registered = {}
 
     @property
     def shop(self):
-        if len(self.shops) > 1:
+        if len(self._shops) > 1:
             raise AttributeError('`shop` is inaccessible since there is more than one shop')
-        return self.shops[0]
+        return self._shops[0]
 
     @property
     def uses(self):
-        [[s.open(None), s.open_backdoor()] for s in self.shops]
+        [[s.open(None), s.open_backdoor()] for s in self._shops]
         return self._uses
 
     def _uses(self, *fixtures):
-        [[s.close_backdoor(), s.close()] for s in self.shops]
+        [[s.close_backdoor(), s.close()] for s in self._shops]
 
         def registrar(fun):
             meta = self._registered.setdefault(
@@ -432,16 +452,17 @@ class Fitter:
 
         return registrar
 
-    def mount(self, mounter=None):
-        mounter = mounter or self._mounter
+    def mount(self, mounter=None, bubble_wrap=None):
+        mounter = mounter or self.mounter
+        bubble_wrap = bubble_wrap or self.bubble_wrap
         make_handler = self._processor.make_core_handler
         shops_striped_fixtures = {
             s: s.striped_fixtures
-            for s in self.shops
+            for s in self._shops
         }
         fitter_ctx = {}
         for fun, meta in self._registered.items():
-            h = make_handler(fun, meta.fixtures, shops_striped_fixtures, fitter_ctx)
+            h = make_handler(fun, bubble_wrap, meta.fixtures, shops_striped_fixtures, fitter_ctx)
             for args, kw in meta.route_args:
                 mounter(*args, **kw)(h)
 

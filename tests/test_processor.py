@@ -5,8 +5,9 @@ from unittest.mock import MagicMock
 
 
 class Proc(BaseProcessor):
-    def init_context(self):
-        pass
+    __slots__ = BaseProcessor.__slots__
+
+    pass
 
 
 class Fixture(BaseFixture):
@@ -85,12 +86,22 @@ def fx_service(shop):
 
 
 @pytest.fixture
-def fx_proc(fx_service):
-    return Proc(fx_service, {})
+def fx_proc():
+    return Proc()
 
 
 @pytest.fixture
-def handler(fx_proc: Proc, foo_bar_baz, shop):
+def except_handlers():
+    def eh(app_ctx, route_ctx, ex):
+        raise ex
+    return {
+        '*': eh
+    }
+
+
+@pytest.fixture
+def handler(fx_proc: Proc, foo_bar_baz, shop, fx_service, request):
+    except_handlers = getattr(request, 'param', None)
     foo_, bar_ = foo_bar_baz[:2]
 
     def core(arg=None):
@@ -98,7 +109,18 @@ def handler(fx_proc: Proc, foo_bar_baz, shop):
             arg('core')
             shop.baz
         return ['a']
-    return fx_proc.make_core_handler(core, [foo_, bar_], {shop: shop.fixtures}, {})
+    return fx_proc.make_core_handler(
+        core,
+        None,
+        fx_service,
+        [foo_, bar_],
+        {shop: shop.fixtures},
+        {
+            'app_ctx': {},
+            'staff_ctx': {}
+        },
+        except_handlers
+    )
 
 
 @pytest.mark.parametrize(
@@ -117,7 +139,8 @@ def handler(fx_proc: Proc, foo_bar_baz, shop):
 )
 def test_process(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService, arg):
     res = handler(arg)
-    ctx = fx_proc._local.ctx
+    this = fx_proc._local.this
+    ctx = this.ctx
     if arg:
         assert res == ['a', 'foo', 'bar', 'baz']
         arg.assert_called_with('core')
@@ -133,38 +156,48 @@ def test_process(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService
     assert ctx.shared_data['foo_ph'] == [ProcessPhase.SETUP, ProcessPhase.OUTPUT, ProcessPhase.FINALIZE]
     assert ctx.shared_data['bar_ph'] == [ProcessPhase.SETUP, ProcessPhase.OUTPUT, ProcessPhase.FINALIZE]
 
-    assert fx_proc._local.fixtures == foo_bar_baz[:-1]
+    assert this.fixtures == foo_bar_baz[:-1]
     assert not fx_service._safe_local.involved
 
 
+def rt(app_ctx, ctx, ex):
+    ctx.shared_data['rt-handler'] = True
+    raise KeyError()
+
+
 @pytest.mark.parametrize(
-    'case, arg, foo_bar_baz',
+    'case, arg, foo_bar_baz, handler',
     [
         [
             0, MagicMock(),
-            [('foo', False), ('bar', ['on_output', RuntimeError, None]), ('baz', False)]
+            [('foo', False), ('bar', ['on_output', RuntimeError, None]), ('baz', False)],
+            {
+                RuntimeError: rt,
+                KeyError: lambda app_ctx, ctx, ex: 'kerr'
+            }
+
         ],
         [
             1, MagicMock(),
-            [('foo', False), ('bar', ['on_finalize', RuntimeError, True]), ('baz', False)]
+            [('foo', False), ('bar', ['on_finalize', RuntimeError, True]), ('baz', False)],
+            {
+                RuntimeError: rt,
+                KeyError: lambda app_ctx, ctx, ex: 'kerr'
+            }
         ],
         [
             2, MagicMock(),
-            [('foo', False), ('bar', ['take_on', RuntimeError, None]), ('baz', False)]
+            [('foo', False), ('bar', ['take_on', RuntimeError, None]), ('baz', False)],
+            {
+                RuntimeError: rt,
+                KeyError: lambda app_ctx, ctx, ex: 'kerr'
+            }
         ],
     ],
-    indirect=['foo_bar_baz']
+    indirect=['foo_bar_baz', 'handler']
 )
 def test_process_err(fx_proc: Proc, handler, foo_bar_baz, fx_service: FixtureService, arg, case):
 
-    def rt(ctx, ex):
-        ctx.shared_data['rt-handler'] = True
-        raise KeyError()
-
-    fx_proc.exception_handlers = {
-        RuntimeError: rt,
-        KeyError: lambda ctx, ex: 'kerr'
-    }
     res = handler(arg)
     assert res == 'kerr'
     ctx = fx_proc.ctx

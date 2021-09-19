@@ -5,8 +5,7 @@ from unittest.mock import MagicMock
 
 
 class Proc(BaseProcessor):
-    def init_context(self):
-        pass
+    __slots__ = BaseProcessor.__slots__
 
 
 class Fixture(BaseFixture):
@@ -85,8 +84,8 @@ def fx_service(shop):
 
 
 @pytest.fixture
-def fx_proc(fx_service):
-    return Proc(fx_service, {})
+def fx_proc():
+    return Proc()
 
 
 class Mounter:
@@ -105,8 +104,8 @@ def mounter():
 
 
 @pytest.fixture
-def action(fx_proc: Proc, foo_bar_baz, shop, mounter):
-    return Fitter(fx_proc, [shop], mounter)
+def action(fx_proc: Proc, foo_bar_baz, shop, mounter, fx_service):
+    return Fitter(fx_proc, fx_service, [shop], mounter)
 
 
 @pytest.fixture

@@ -1,8 +1,9 @@
 import threading
 import functools
-import types
 import enum
+import inspect
 from collections import UserDict
+from types import SimpleNamespace
 
 __version__ = '0.0.1'
 __author__ = "Valery Kucherov <valq7711@gmail.com>"
@@ -30,7 +31,8 @@ class RouteContext:
     __slots__ = (
         'request', 'response', 'output', 'shared_data',
         'exception', 'finalize_exceptions',
-        'successful', 'phase', 'stop_finalize'
+        'successful', 'phase', 'stop_finalize',
+        'app_ctx'
     )
 
     def __init__(self):
@@ -43,6 +45,7 @@ class RouteContext:
         self.successful = True
         self.phase: ProcessPhase = None
         self.stop_finalize = False
+        self.app_ctx = {}
 
 
 class LocalStorage:
@@ -74,11 +77,11 @@ class LocalStorage:
         return storage
 
 
-class BubbleWrap(LocalStorage):
-    def setup(self):
+class BaseGateway(LocalStorage):
+    def setup(self, app_ctx):
         pass
 
-    def cleanup(self, route_ctx):
+    def cleanup(self, app_ctx, route_ctx):
         pass
 
 
@@ -172,6 +175,7 @@ class FixtureStorage(UserDict):
 
 
 class FixtureShop:
+    __slots__ = ('_local', '_on_checkout')
 
     @classmethod
     def make_from(cls, src_class):
@@ -180,12 +184,14 @@ class FixtureShop:
 
     def __init__(self, fixtures_dict):
         self._local = threading.local()
+        this = self._local.this = SimpleNamespace()
+        this.fixtures = None
         self.open(fixtures_dict)
         self._on_checkout = None
 
     @property
     def fixtures(self):
-        return self._local.fixtures
+        return self._local.this.fixtures
 
     @property
     def striped_fixtures(self):
@@ -196,29 +202,31 @@ class FixtureShop:
         return ret
 
     def open(self, fixtures):
-        self._local.opened = True
-        self._local.backdoor_opened = False
+        this = self._local.this
+        this.opened = True
+        this.backdoor_opened = False
         if fixtures is not None:
-            self._local.fixtures = FixtureStorage(fixtures)
+            this.fixtures = FixtureStorage(fixtures)
+        return self
 
     def close(self):
-        self._local.opened = False
+        self._local.this.opened = False
 
     def open_backdoor(self):
-        self._local.backdoor_opened = True
+        self._local.this.backdoor_opened = True
 
     def close_backdoor(self):
-        self._local.backdoor_opened = False
+        self._local.this.backdoor_opened = False
 
     def on_checkout(self, cb):
         self._on_checkout = cb
 
     def __getattr__(self, k):
-        local = self._local
-        if not local.opened:
+        this = self._local.this
+        if not this.opened:
             raise RuntimeError('Shop is closed')
-        f = local.fixtures[k]
-        if not local.backdoor_opened:
+        f = this.fixtures[k]
+        if not this.backdoor_opened:
             self._on_checkout(f)
         return f
 
@@ -243,15 +251,15 @@ class FixtureService(LocalStorage):
         self._reverse_postproc_order = reverse_postproc
         self._shops = set()
 
-    def init(self, ctx, fitter_ctx, reverse_postproc=None):
+    def init(self, ctx, staff_ctx, reverse_postproc=None):
         if reverse_postproc is not None:
             self._reverse_postproc_order = reverse_postproc
 
-        local = self._safe_local = types.SimpleNamespace()
+        local = self._safe_local = SimpleNamespace()
         local.involved = OrderedUniqSet()
         local.ctx = ctx
-        local.fitter_ctx = fitter_ctx
-        fitter_ctx.setdefault('fixtures_deps_cache', _DepsCache())
+        local.staff_ctx = staff_ctx
+        staff_ctx.setdefault('fixtures_deps_cache', _DepsCache())
 
     def serve(self, shop):
         if shop in self._shops:
@@ -273,7 +281,7 @@ class FixtureService(LocalStorage):
         if is_expanded:
             not_involved.add(*[f for f in fixtures if f not in involved])
         else:
-            deps_cache = local.fitter_ctx['fixtures_deps_cache']
+            deps_cache = local.staff_ctx['fixtures_deps_cache']
             [
                 not_involved.add(*deps_cache[f])
                 for f in fixtures if f not in involved
@@ -302,86 +310,137 @@ class FixtureService(LocalStorage):
         [involved.pop(f) and f.on_finalize(ctx) for f in involved_]
 
 
+class Ctx(set):
+    pass
+
+
+class BubbleException(BaseException):
+    def __init__(self, wrapped_exception):
+        super().__init__(f'BubbleException for {str(wrapped_exception)}')
+        self.wrapped_exception = wrapped_exception
+
+
 class BaseProcessor:
 
-    __slots__ = ('_local', 'exception_handlers')
+    __slots__ = ('_local', 'inject_class')
 
-    def __init__(self, fixture_service, exception_handlers=None):
-        self._fixture_service: FixtureService = fixture_service
-        self.exception_handlers = exception_handlers or {}
+    def __init__(self, inject_class = None):
+        self.inject_class = inject_class or Ctx
         self._local = threading.local()
-        self._local.bubble_wrap = None
-        self._local.ctx = None
-        self._local.fun = None
-        self._local.fixtures = None
-        self._local.shop_fixtures_map = None
-        self._local.fitter_ctx = None  # mounted context
+        this = self._local.this = SimpleNamespace()
+        this.gateway = None
+        this.ctx = None
+        this.fun = None
+        this.fixtures = None
+        this.shop_fixtures_map = None
+        this.fitter_ctx = None  # mounted context
+        this.fixture_service = None
+        this.exception_handlers = {}
+        this.inject = None
+
+    def _get_inject(self, fun):
+        kwdefs = inspect.getfullargspec(fun).kwonlydefaults
+        if not kwdefs:
+            return
+        inject = [k for k, v in kwdefs if isinstance(v, self.inject_class)]
+        if not inject:
+            return
+        arg_nm = inject.pop()
+        if inject:
+            raise TypeError('Only one inject-arg allowed')
+        return arg_nm
 
     @property
     def ctx(self):
-        return self._local.ctx
+        return self._local.this.ctx
 
-    def make_core_handler(self, fun, bubble_wrap, front_fixtures, shop_fixtures_map, fitter_ctx):
-        expanded_fixtures = self._fixture_service.expand_deps(*front_fixtures)
-        process = self.bubble_wrpapped_process if bubble_wrap else self.process
+    def make_core_handler(self, fun, gateway, fixture_service,
+                          front_fixtures, shop_fixtures_map, fitter_ctx,
+                          exception_handlers=None):
+        expanded_fixtures = fixture_service.expand_deps(*front_fixtures)
+        exception_handlers = exception_handlers or {}
+        if '*' not in exception_handlers:
+            exception_handlers['*'] = self.exception_default_handler
+        inject = self._get_inject(fun)
 
         @functools.wraps(fun)
         def handler(*args, **kwargs):
-            local = self._local
-            local.bubble_wrap = bubble_wrap
-            local.ctx = None
-            local.fun = fun
-            local.fixtures = expanded_fixtures
-            local.shop_fixtures_map = shop_fixtures_map
-            local.fitter_ctx = fitter_ctx
-            return process(*args, **kwargs)
+            this = self._local.this = SimpleNamespace()
+            this.gateway = gateway
+            this.ctx = None
+            this.fun = fun
+            this.fixture_service = fixture_service
+            this.fixtures = expanded_fixtures
+            this.shop_fixtures_map = shop_fixtures_map
+            this.fitter_ctx = fitter_ctx
+            this.exception_handlers = exception_handlers
+            this.inject = inject
+            return self.gateway(*args, **kwargs)
 
         return handler
 
-    def bubble_wrpapped_process(self, *args, **kwargs):
-        bubble_wrap = self._local.bubble_wrap
-        bubble_wrap.setup()
+    def gateway(self, *args, **kwargs):
+        this = self._local.this
+        this.ctx = RouteContext()
+        self.init_context()
+        gateway = this.gateway
+        if not gateway:
+            return self.bubble_wrap(*args, **kwargs)
+        app_ctx = this.fitter_ctx['app_ctx']
+        gateway.setup(app_ctx, this.ctx)
         try:
-            return self.process(*args, **kwargs)
+            return self.bubble_wrap(*args, **kwargs)
         finally:
-            bubble_wrap.cleanup(self._local.ctx)
+            gateway.cleanup(app_ctx, this.ctx)
 
-    def process(self, *args, **kwargs):
+    def bubble_wrap(self, *args, **kwargs):
+        this = self._local.this
+        exception_handlers = this.exception_handlers
         try:
-            ret = self.process_inner(*args, **kwargs)
-            if self._local.ctx.finalize_exceptions:
+            ret = self.process(*args, **kwargs)
+            if this.ctx.finalize_exceptions:
                 self.process_finalize_exceptions()
             return ret
         except BaseException as cur_ex:
-            default_handler = self.default_exception_handler
-            handler = self.exception_handlers.get(cur_ex.__class__, default_handler)
+            app_ctx = this.fitter_ctx['app_ctx']
+            default_handler = exception_handlers['*']
+            handler = exception_handlers.get(cur_ex.__class__, default_handler)
             max_rehandlered = 10
             ex_stack = [cur_ex]
             while len(ex_stack) < max_rehandlered:
                 try:
-                    return handler(self._local.ctx, cur_ex)
+                    return handler(app_ctx, this.ctx, cur_ex)
+                except BubbleException as ex:
+                    raise ex.wrapped_exception
                 except BaseException as ex:
-                    next_handler = self.exception_handlers.get(ex.__class__, default_handler)
-                    if ex in ex_stack:
-                        raise
+                    if ex is cur_ex:
+                        return default_handler(app_ctx, this.ctx, cur_ex)
+                    next_handler = exception_handlers.get(ex.__class__, default_handler)
                     ex_stack.append(cur_ex)
                     cur_ex = ex
                     handler = next_handler
-            raise RuntimeError('Max rehandlered exceeded')
+            return default_handler(app_ctx, this.ctx, RuntimeError('Max rehandlered exceeded'))
 
-    def process_inner(self, *args, **kwargs):
-        local = self._local
-        local.ctx = RouteContext()
-        self.init_context()
-        ctx = local.ctx
-        fs = self._fixture_service
-        fs.init(ctx, local.fitter_ctx)
-        opened_shops = [[shop.open(fixtures), shop][-1] for shop, fixtures in local.shop_fixtures_map.items()]
+    def process(self, *args, **kwargs):
+        this = self._local.this
+        ctx = this.ctx
+        if this.inject:
+            kwargs[this.inject] = SimpleNamespace(
+                app_ctx = this.app_ctx,
+                request = ctx.request,
+                response = ctx.response,
+            )
+        fs = this.fixture_service
+        fs.init(ctx, this.fitter_ctx['staff_ctx'])
+        opened_shops = [
+            shop.open(fixtures)
+            for shop, fixtures in this.shop_fixtures_map.items()
+        ]
         try:
             ctx.phase = ProcessPhase.SETUP
-            fs.use(*local.fixtures, is_expanded=True)
+            fs.use(*this.fixtures, is_expanded=True)
             ctx.phase = ProcessPhase.RUN
-            ctx.output = local.fun(*args, **kwargs)
+            ctx.output = this.fun(*args, **kwargs)
             [opened_shops.pop().close() for _ in [*opened_shops]]
             ctx.phase = ProcessPhase.OUTPUT
             fs.on_output()
@@ -405,7 +464,7 @@ class BaseProcessor:
     def init_context(self):
         pass
 
-    def default_exception_handler(self, ctx, ex):
+    def exception_default_handler(self, app_ctx, ctx, ex):
         raise
 
     def process_finalize_exceptions(self):
@@ -421,13 +480,49 @@ class FixtureHolder:
 
 
 class Fitter:
-    def __init__(self, processor: BaseProcessor, shops,
-                 mounter=None, bubble_wrap = None):
-        self.mounter = mounter
-        self.bubble_wrap = bubble_wrap
-        self._processor = processor
-        self._shops = shops
+    def __init__(
+            self,
+            processor: BaseProcessor,
+            fixture_service: FixtureService,
+            shops,
+            mounter=None,
+            gateway = None,
+            ctx=None,
+            exception_handlers=None,
+    ):
+
+        # allow to implement `mounter`
+        if mounter:
+            self.mounter = mounter
+        self.gateway = gateway
+        self.ctx = ctx
+        self.exception_handlers = exception_handlers or {}
+        self.processor = processor
+        self._fixture_service = fixture_service
+        self._shops = tuple(shops)
         self._registered = {}
+        self._locked = False
+
+    def error(self, exception_class=None, handler=None):
+        if not handler:
+            return lambda h: self.error(exception_class, h)
+        self.exception_handlers[exception_class] = handler
+        return handler
+
+    def _lock(self):
+        fs = self._fixture_service
+        [fs.serve(s) for s in self._shops]
+        self._locked = True
+
+    @property
+    def shops(self):
+        return self._shops
+
+    @shops.setter
+    def shops(self, shops):
+        if self._locked:
+            raise AttributeError('After the first `use()`-call, the property becomes locked')
+        self._shops = shops
 
     @property
     def shop(self):
@@ -437,6 +532,8 @@ class Fitter:
 
     @property
     def uses(self):
+        if not self._locked:
+            self._lock()
         [[s.open(None), s.open_backdoor()] for s in self._shops]
         return self._uses
 
@@ -445,31 +542,38 @@ class Fitter:
 
         def registrar(fun):
             meta = self._registered.setdefault(
-                fun, types.SimpleNamespace(route_args=[], fixtures=[])
+                fun, SimpleNamespace(route_args=[], fixtures=[])
             )
             meta.fixtures.extend(fixtures)
             return fun
 
         return registrar
 
-    def mount(self, mounter=None, bubble_wrap=None):
+    def mount(self, mounter=None):
         mounter = mounter or self.mounter
-        bubble_wrap = bubble_wrap or self.bubble_wrap
-        make_handler = self._processor.make_core_handler
+        gateway = self.gateway
+        make_handler = self.processor.make_core_handler
         shops_striped_fixtures = {
             s: s.striped_fixtures
             for s in self._shops
         }
-        fitter_ctx = {}
+        fitter_ctx = dict(
+            staff_ctx = {},  # used for cache
+            app_ctx = self.ctx  # used as app_ctx (e.g. to store app_name)
+        )
         for fun, meta in self._registered.items():
-            h = make_handler(fun, bubble_wrap, meta.fixtures, shops_striped_fixtures, fitter_ctx)
+            h = make_handler(
+                fun, gateway, self._fixture_service, meta.fixtures,
+                shops_striped_fixtures, fitter_ctx,
+                self.exception_handlers
+            )
             for args, kw in meta.route_args:
                 mounter(*args, **kw)(h)
 
     def __call__(self, *args, **kw):
         def registrar(fun):
             meta = self._registered.setdefault(
-                fun, types.SimpleNamespace(route_args=[], fixtures=[])
+                fun, SimpleNamespace(route_args=[], fixtures=[])
             )
             meta.route_args.append((args, kw))
             return fun

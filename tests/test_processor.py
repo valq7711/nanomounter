@@ -17,7 +17,7 @@ class Fixture(BaseFixture):
             raise_ = ['', None, None]
         self.raise_ = raise_
 
-    def take_on(self, ctx):
+    def take_on(self, app_ctx, ctx):
         cb_name, err_cls, stop_final = self.raise_
         self._safe_local = {}
         ctx.shared_data[self.name] = ['touch']
@@ -25,7 +25,7 @@ class Fixture(BaseFixture):
         if cb_name == 'take_on':
             raise err_cls(self.name)
 
-    def on_output(self, ctx):
+    def on_output(self, app_ctx, ctx):
         cb_name, err_cls, stop_final = self.raise_
         ctx.shared_data[self.name].append('out')
         ctx.shared_data[self.name + '_ph'].append(ctx.phase)
@@ -33,7 +33,7 @@ class Fixture(BaseFixture):
         if cb_name == 'on_output':
             raise err_cls(self.name)
 
-    def on_finalize(self, ctx):
+    def on_finalize(self, app_ctx, ctx):
         cb_name, err_cls, stop_final = self.raise_
         ctx.shared_data[self.name].append('final')
         ctx.shared_data[self.name + '_ph'].append(ctx.phase)

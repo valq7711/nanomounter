@@ -101,7 +101,7 @@ class BaseFixture(LocalStorage):
                     deps.append(it)
         return self
 
-    def take_on(self, ctx):
+    def take_on(self, app_ctx, ctx):
         ''' Called before run or before direct use of the fixture.
 
             Not called if an exception is raised before,
@@ -109,14 +109,14 @@ class BaseFixture(LocalStorage):
         '''
         pass
 
-    def on_output(self, ctx):
+    def on_output(self, app_ctx, ctx):
         ''' Called after successful core-function run.
 
             Not called if an exception is raised before.
         '''
         pass
 
-    def on_finalize(self, ctx):
+    def on_finalize(self, app_ctx, ctx):
         ''' Called at the end of process.
 
             Not called if an exception is raised before with ctx.stop_finalize set to True.
@@ -251,12 +251,13 @@ class FixtureService(LocalStorage):
         self._reverse_postproc_order = reverse_postproc
         self._shops = set()
 
-    def init(self, ctx, staff_ctx, reverse_postproc=None):
+    def init(self, app_ctx, ctx, staff_ctx, reverse_postproc=None):
         if reverse_postproc is not None:
             self._reverse_postproc_order = reverse_postproc
 
         local = self._safe_local = SimpleNamespace()
         local.involved = OrderedUniqSet()
+        local.app_ctx = app_ctx
         local.ctx = ctx
         local.staff_ctx = staff_ctx
         staff_ctx.setdefault('fixtures_deps_cache', _DepsCache())
@@ -276,6 +277,7 @@ class FixtureService(LocalStorage):
     def use(self, *fixtures, is_expanded = False):
         local = self._safe_local
         ctx = local.ctx
+        app_ctx = local.app_ctx
         involved = local.involved
         not_involved = OrderedUniqSet()
         if is_expanded:
@@ -287,15 +289,16 @@ class FixtureService(LocalStorage):
                 for f in fixtures if f not in involved
             ]
         involved.add(*not_involved)
-        [f.take_on(ctx) for f in not_involved]
+        [f.take_on(app_ctx, ctx) for f in not_involved]
 
     def on_output(self):
         local = self._safe_local
         ctx = local.ctx
+        app_ctx = local.app_ctx
         involved = local.involved
         if self._reverse_postproc_order:
             involved = reversed(involved)
-        [obj.on_output(ctx) for obj in involved]
+        [obj.on_output(app_ctx, ctx) for obj in involved]
 
     def finalize(self):
         local = self._safe_local
@@ -306,12 +309,23 @@ class FixtureService(LocalStorage):
             involved_ = [*reversed(involved)]
         else:
             involved_ = [*involved]
+        app_ctx = local.app_ctx
         ctx = local.ctx
-        [involved.pop(f) and f.on_finalize(ctx) for f in involved_]
+        [involved.pop(f) and f.on_finalize(app_ctx, ctx) for f in involved_]
 
 
-class Ctx(set):
-    pass
+class Ctx:
+    request = None
+    response = None
+    app_ctx = None
+
+    def make_ctx(self, app_ctx, request, response):
+        ret: Ctx = SimpleNamespace(
+            app_ctx = app_ctx,
+            request = request,
+            response = response,
+        )
+        return ret
 
 
 class BubbleException(BaseException):
@@ -339,16 +353,20 @@ class BaseProcessor:
         this.inject = None
 
     def _get_inject(self, fun):
-        kwdefs = inspect.getfullargspec(fun).kwonlydefaults
+        aspec = inspect.getfullargspec(fun)
+        kwdefs = aspec.kwonlydefaults
         if not kwdefs:
-            return
-        inject = [k for k, v in kwdefs if isinstance(v, self.inject_class)]
+            kw_names = aspec.args[-len(aspec.defaults):]
+            kwdefs = {k: v for k, v in zip(kw_names, aspec.defaults)}
+            if not kwdefs:
+                return None, None
+        inject = [(k, v) for k, v in kwdefs.items() if isinstance(v, self.inject_class)]
         if not inject:
-            return
-        arg_nm = inject.pop()
+            return None, None
+        arg_nm, ctx_maker = inject.pop()
         if inject:
             raise TypeError('Only one inject-arg allowed')
-        return arg_nm
+        return arg_nm, ctx_maker
 
     @property
     def ctx(self):
@@ -424,14 +442,14 @@ class BaseProcessor:
     def process(self, *args, **kwargs):
         this = self._local.this
         ctx = this.ctx
-        if this.inject:
-            kwargs[this.inject] = SimpleNamespace(
-                app_ctx = this.app_ctx,
-                request = ctx.request,
-                response = ctx.response,
+        app_ctx = this.fitter_ctx['app_ctx']
+        kw_name, ctx_maker = this.inject
+        if kw_name:
+            kwargs[kw_name] = ctx_maker.make_ctx(
+                app_ctx, ctx.request, ctx.response
             )
-        fs = this.fixture_service
-        fs.init(ctx, this.fitter_ctx['staff_ctx'])
+        fs: FixtureService = this.fixture_service
+        fs.init(app_ctx, ctx, this.fitter_ctx['staff_ctx'])
         opened_shops = [
             shop.open(fixtures)
             for shop, fixtures in this.shop_fixtures_map.items()
@@ -539,6 +557,7 @@ class Fitter:
 
     def _uses(self, *fixtures):
         [[s.close_backdoor(), s.close()] for s in self._shops]
+        fixtures = self._parse_uses_args(fixtures)
 
         def registrar(fun):
             meta = self._registered.setdefault(
@@ -548,6 +567,9 @@ class Fitter:
             return fun
 
         return registrar
+
+    def _parse_uses_args(self, fixtures):
+        return fixtures
 
     def mount(self, mounter=None):
         mounter = mounter or self.mounter

@@ -8,14 +8,14 @@ class Fixture(BaseFixture):
     def __init__(self, name):
         self.name = name
 
-    def take_on(self, ctx):
+    def take_on(self, app_ctx, ctx):
         self._safe_local = {}
         ctx(self.name)
 
-    def on_output(self, ctx):
+    def on_output(self, app_ctx, ctx):
         ctx(self.name)
 
-    def on_finalize(self, ctx):
+    def on_finalize(self, app_ctx, ctx):
         ctx(self.name)
 
 
@@ -52,7 +52,7 @@ def test_expand_deps(fx_service: FixtureService, foo_bar_baz_deps):
 def test_process_flow(fx_service: FixtureService, foo_bar_baz):
     foo, bar, baz = foo_bar_baz
     ctx = MagicMock()
-    fx_service.init(ctx, {})
+    fx_service.init({}, ctx, {})
     assert not ctx.called
     fx_service.use(*foo_bar_baz)
     assert ctx.mock_calls == [call(f.name) for f in foo_bar_baz]
@@ -69,7 +69,7 @@ def test_process_flow(fx_service: FixtureService, foo_bar_baz):
 def test_process_flow_deps(fx_service: FixtureService, foo_bar_baz_deps):
     foo, bar, baz = foo_bar_baz_deps
     ctx = MagicMock()
-    fx_service.init(ctx, {})
+    fx_service.init({}, ctx, {})
     assert not ctx.called
     fx_service.use(baz)
     assert ctx.mock_calls == [call(f.name) for f in foo_bar_baz_deps]
@@ -87,7 +87,7 @@ def test_deps_cache(fx_service: FixtureService, foo_bar_baz_deps):
     foo, bar, baz = foo_bar_baz_deps
     ctx = MagicMock()
     fitter_ctx = {}
-    fx_service.init(ctx, fitter_ctx)
+    fx_service.init({}, ctx, fitter_ctx)
     assert not ctx.called
     fx_service.use(baz)
     assert 'fixtures_deps_cache' in fitter_ctx

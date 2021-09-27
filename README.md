@@ -1,6 +1,10 @@
 # omfitt (One More FITTer)
 Actions fitter for py4web.
 
+```diff
+- Example is out of date, sorry :(
+```
+
 An example to showcase the idea
 
 ## This is reusable module that can be imported by applications

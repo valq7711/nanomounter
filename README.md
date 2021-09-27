@@ -72,7 +72,7 @@ class Counter(BaseFixture):
 
     def take_on(self, app_ctx, ctx):
         # expose counter value so that the following
-        # fixtures can access it via ctx.ask('client_cnt')
+        # fixtures can access it via ctx.ask('client')
         ctx.provide('client', {app_ctx.name: self.cnt})
 
 

@@ -32,7 +32,7 @@ class RouteContext:
         'request', 'response', 'output', 'shared_data',
         'exception', 'finalize_exceptions',
         'successful', 'phase', 'stop_finalize',
-        'app_ctx'
+        'app_ctx', '_provided'
     )
 
     def __init__(self):
@@ -46,6 +46,15 @@ class RouteContext:
         self.phase: ProcessPhase = None
         self.stop_finalize = False
         self.app_ctx = {}
+        self._provided = {}
+
+    def provide(self, key, obj):
+        if key in self._provided:
+            raise KeyError(f'Key is already in use: {key}')
+        self._provided[key] = obj
+
+    def ask(self, key, default=None):
+        return self._provided.get(key, default)
 
 
 class LocalStorage:
@@ -227,7 +236,7 @@ class FixtureShop:
             raise RuntimeError('Shop is closed')
         f = this.fixtures[k]
         if not this.backdoor_opened:
-            self._on_checkout(f)
+            self._on_checkout and self._on_checkout(f)
         return f
 
     @staticmethod
@@ -356,9 +365,10 @@ class BaseProcessor:
         aspec = inspect.getfullargspec(fun)
         kwdefs = aspec.kwonlydefaults
         if not kwdefs:
-            kw_names = aspec.args[-len(aspec.defaults):]
-            kwdefs = {k: v for k, v in zip(kw_names, aspec.defaults)}
-            if not kwdefs:
+            if aspec.defaults:
+                kw_names = aspec.args[-len(aspec.defaults):]
+                kwdefs = {k: v for k, v in zip(kw_names, aspec.defaults)}
+            else:
                 return None, None
         inject = [(k, v) for k, v in kwdefs.items() if isinstance(v, self.inject_class)]
         if not inject:
@@ -375,24 +385,27 @@ class BaseProcessor:
     def make_core_handler(self, fun, gateway, fixture_service,
                           front_fixtures, shop_fixtures_map, fitter_ctx,
                           exception_handlers=None):
+
         expanded_fixtures = fixture_service.expand_deps(*front_fixtures)
         exception_handlers = exception_handlers or {}
         if '*' not in exception_handlers:
             exception_handlers['*'] = self.exception_default_handler
         inject = self._get_inject(fun)
 
+        this = SimpleNamespace()
+        this.gateway = gateway
+        this.ctx = None
+        this.fun = fun
+        this.fixture_service = fixture_service
+        this.fixtures = expanded_fixtures
+        this.shop_fixtures_map = shop_fixtures_map
+        this.fitter_ctx = fitter_ctx
+        this.exception_handlers = exception_handlers
+        this.inject = inject
+
         @functools.wraps(fun)
         def handler(*args, **kwargs):
-            this = self._local.this = SimpleNamespace()
-            this.gateway = gateway
-            this.ctx = None
-            this.fun = fun
-            this.fixture_service = fixture_service
-            this.fixtures = expanded_fixtures
-            this.shop_fixtures_map = shop_fixtures_map
-            this.fitter_ctx = fitter_ctx
-            this.exception_handlers = exception_handlers
-            this.inject = inject
+            self._local.this = this
             return self.gateway(*args, **kwargs)
 
         return handler
@@ -497,61 +510,50 @@ class FixtureHolder:
         self.value = fixture
 
 
-class Fitter:
-    def __init__(
-            self,
-            processor: BaseProcessor,
-            fixture_service: FixtureService,
-            shops,
-            mounter=None,
-            gateway = None,
-            ctx=None,
-            exception_handlers=None,
-    ):
-
-        # allow to implement `mounter`
-        if mounter:
-            self.mounter = mounter
-        self.gateway = gateway
-        self.ctx = ctx
-        self.exception_handlers = exception_handlers or {}
-        self.processor = processor
-        self._fixture_service = fixture_service
-        self._shops = tuple(shops)
+class BaseAction:
+    def __init__(self, fitter: 'Fitter'):
+        self._fitter = fitter
+        self._in_use = False
         self._registered = {}
-        self._locked = False
 
-    def error(self, exception_class=None, handler=None):
-        if not handler:
-            return lambda h: self.error(exception_class, h)
-        self.exception_handlers[exception_class] = handler
-        return handler
+    def __call__(self, *args, **kw):
+        path, method, name, prop, kw = self._parse_action_args(args, kw)
 
-    def _lock(self):
-        fs = self._fixture_service
-        [fs.serve(s) for s in self._shops]
-        self._locked = True
+        def registrar(fun):
+            self._register(fun, route_args=(path, method, name, prop, kw))
+            return fun
+        return registrar
+
+    def _register(self, fun, *, route_args=None, fixtures=None):
+        if not (fixtures or route_args):
+            raise TypeError('At least one arg is required: route_args or fixtures')
+        meta = self._registered.setdefault(
+            fun, SimpleNamespace(route_args=[], fixtures=[])
+        )
+        if route_args:
+            meta.route_args.append(route_args)
+        if fixtures:
+            meta.fixtures.extend(fixtures)
+
+    def make_handlers(self, app_ctx, app):
+        yield from self._fitter.make_handlers(self._registered, app_ctx, app)
 
     @property
-    def shops(self):
-        return self._shops
-
-    @shops.setter
-    def shops(self, shops):
-        if self._locked:
-            raise AttributeError('After the first `use()`-call, the property becomes locked')
-        self._shops = shops
+    def registered(self):
+        return self._registered
 
     @property
-    def shop(self):
-        if len(self._shops) > 1:
-            raise AttributeError('`shop` is inaccessible since there is more than one shop')
-        return self._shops[0]
+    def fitter(self):
+        return self._fitter
+
+    def _parse_action_args(self, args, kw):
+        return args, kw
 
     @property
     def uses(self):
-        if not self._locked:
-            self._lock()
+        if not self._in_use:
+            self._fitter.freeze_shops()
+            self._in_use = True
         [[s.open(None), s.open_backdoor()] for s in self._shops]
         return self._uses
 
@@ -560,51 +562,222 @@ class Fitter:
         fixtures = self._parse_uses_args(fixtures)
 
         def registrar(fun):
+            '''
             meta = self._registered.setdefault(
                 fun, SimpleNamespace(route_args=[], fixtures=[])
             )
             meta.fixtures.extend(fixtures)
+            '''
+            self._register(fun, fixtures=fixtures)
             return fun
 
         return registrar
 
+    @property
+    def _shops(self):
+        return self._fitter._shops
+
     def _parse_uses_args(self, fixtures):
         return fixtures
 
-    def mount(self, mounter=None):
-        mounter = mounter or self.mounter
-        gateway = self.gateway
-        make_handler = self.processor.make_core_handler
+
+class Fitter:
+    def __init__(
+            self,
+            processor: BaseProcessor,
+            fixture_service: FixtureService,
+            shops,
+            exception_handlers=None,
+            default_fixtures=None
+    ):
+
+        # allow to implement `mounter`
+        self.outer_wrappers, self.inner_wrappers = default_fixtures or ([], [])
+        self.exception_handlers = exception_handlers or {}
+        self.processor = processor
+        self._fixture_service = fixture_service
+        self._shops = tuple(shops)
+        self._shops_frozen = False
+
+    def error(self, exception_class=None, handler=None):
+        if not handler:
+            return lambda h: self.error(exception_class, h)
+        self.exception_handlers[exception_class] = handler
+        return handler
+
+    def freeze_shops(self):
+        if self._shops_frozen:
+            return
+        fs = self._fixture_service
+        [fs.serve(s) for s in self._shops]
+        self._shops_frozen = True
+
+    @property
+    def shops(self):
+        return self._shops
+
+    @shops.setter
+    def shops(self, shops):
+        if self._shops_frozen:
+            raise AttributeError('After the first `action.use()`-call, the property becomes locked')
+        self._shops = shops
+
+    @property
+    def shop(self) -> FixtureShop:
+        if len(self._shops) > 1:
+            raise AttributeError('`shop` is inaccessible since there is more than one shop')
+        return self._shops[0]
+
+    def make_handlers(self, registered, app_ctx, app):
         shops_striped_fixtures = {
             s: s.striped_fixtures
             for s in self._shops
         }
         fitter_ctx = dict(
             staff_ctx = {},  # used for cache
-            app_ctx = self.ctx  # used as app_ctx (e.g. to store app_name)
+            app_ctx = app_ctx  # used as app_ctx (e.g. to store app_name)
         )
-        for fun, meta in self._registered.items():
-            h = make_handler(
-                fun, gateway, self._fixture_service, meta.fixtures,
-                shops_striped_fixtures, fitter_ctx,
-                self.exception_handlers
+        exception_handlers = self.exception_handlers.copy()
+        for fun, meta in registered.items():
+            h = self._make_handler(
+                fun, meta.fixtures, shops_striped_fixtures,
+                fitter_ctx, exception_handlers, app
             )
-            for args, kw in meta.route_args:
-                mounter(*args, **kw)(h)
+            # yield handler for routing
+            yield h, meta
 
-    def __call__(self, *args, **kw):
-        def registrar(fun):
-            meta = self._registered.setdefault(
-                fun, SimpleNamespace(route_args=[], fixtures=[])
-            )
-            meta.route_args.append((args, kw))
-            return fun
-        return registrar
+    def _make_handler(self, fun, fixtures, shops_striped_fixtures,
+                      fitter_ctx, exception_handlers, app):
+        make_core_handler = self.processor.make_core_handler
+        gateway = app
+        fixtures = self.outer_wrappers + fixtures + self.inner_wrappers
+        core_handler = make_core_handler(
+            fun, gateway, self._fixture_service, fixtures,
+            shops_striped_fixtures, fitter_ctx,
+            exception_handlers
+        )
+        return core_handler
 
-    @staticmethod
-    def _get_striped_fixtures(fixtures):
-        ret = [
-            f if not isinstance(f, FixtureHolder) else f.value
-            for f in fixtures
-        ]
+
+class EmptyObj:
+    def __getattr__(self, k):
+        return None
+
+
+empty_ctx = EmptyObj()
+
+
+class BaseCtx:
+    def __init__(self, app, name, master_ctx: 'BaseCtx' = None, props=None,):
+
+        self.name = name
+        self.app = app
+        self.parent = None
+        self.children = {}
+        # mount-specific props like base_url, routes_map, static/template folder ...
+        self.props = props
+
+        self.named_routes = {}
+        self.routes = []
+
+        if master_ctx:
+            if name in master_ctx.children:
+                raise KeyError(f'Name is already in use: {name}')
+            master_ctx.children[name] = self
+            self.parent = master_ctx
+        else:
+            master_ctx = empty_ctx
+
+        self.root = master_ctx.root or self
+        self.mount_stack = (master_ctx.mount_stack or tuple()) + (self,)
+
+
+class BaseApp:
+    def __init__(self, action: BaseAction):
+        self._action = action
+        self._local = threading.local()
+        self._app_props = dict()
+        self._app_methods = dict()
+
+    def add_prop(self, name, prop: 'BaseAppProp'):
+        self._app_props[name] = prop
+
+    def add_method(self, name, meth: 'BaseAppMethod'):
+        self._app_methods[name] = meth
+        setattr(self, name, meth)
+
+    def mount(self, name, master_ctx=None, **props):
+        app_ctx = self._make_ctx(name, master_ctx, props)
+        for h, meta in self._action.make_handlers(app_ctx, self):
+            for args in meta.route_args:
+                self._mount_route(app_ctx, h, args)
+        return app_ctx
+
+    def _make_ctx(self, name, master_ctx, props):
+        return BaseCtx(self, name, master_ctx, props)
+
+    def _mount_route(self, ctx: BaseCtx, fun, route_args):
+        pass
+
+    def __getattr__(self, p):
+        prop: 'BaseAppProp' = self._app_props[p]
+        ret = prop.setup()
+        if ret is None:
+            ret = prop
+        self._local.used_props.append([p, prop])
+        setattr(self, p, ret)
         return ret
+
+    def __getitem__(self, app_name):
+        """Return initialized child app."""
+        local = self._local
+        app = local.used_apps.get(app_name)
+        if app:
+            return app
+        ctx = local.ctx.children[app_name]
+        app = ctx.app
+        app.setup(ctx, None)
+        local.used_apps[app_name] = app
+        return app
+
+    # process hooks
+    def setup(self, ctx: BaseCtx, route_ctx: RouteContext):
+        local = self._local
+        local.ctx = ctx
+        local.used_methods = set()
+        local.used_props = []
+        local.used_apps = {}
+        # route_ctx.provide('url', self.url)
+
+    def cleanup(self, ctx=None, route_ctx=None):
+        local = self._local
+        [[prop.cleanup(), self.__dict__.pop(p)] for p, prop in self._local.used_props]
+        [app.cleanup() for app in local.used_apps.values()]
+        [meth.cleanup() for meth in local.used_methods]
+        local.ctx = None
+        local.used_methods = None
+        local.used_props = None
+        local.used_apps = None
+
+
+class BaseAppProp:
+    def __init__(self, app: BaseApp):
+        self._app = app
+
+    def setup(self):
+        return self
+
+    def cleanup(self):
+        pass
+
+
+class BaseAppMethod(BaseAppProp):
+    def __init__(self, app):
+        self._app = app
+        self._app_local = app._local
+
+    def __call__(self):
+        app_used_methods = self._app_local.used_methods
+        if self not in app_used_methods:
+            self.setup()
+            app_used_methods.add(self)

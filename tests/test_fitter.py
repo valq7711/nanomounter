@@ -1,7 +1,12 @@
 
 import pytest
-from omfitt import BaseFixture, FixtureService, BaseProcessor, FixtureShop, Fitter
+from omfitt import BaseFixture, FixtureService, BaseProcessor, FixtureShop, Fitter, BaseAction as _BaseAction
 from unittest.mock import MagicMock
+
+
+class BaseAction(_BaseAction):
+    def _parse_action_args(self, args, kw):
+        return args[0], 'GET', None, None, kw
 
 
 class Proc(BaseProcessor):
@@ -105,7 +110,8 @@ def mounter():
 
 @pytest.fixture
 def action(fx_proc: Proc, foo_bar_baz, shop, mounter, fx_service):
-    return Fitter(fx_proc, fx_service, [shop], mounter)
+    fitter = Fitter(fx_proc, fx_service, [shop])
+    return BaseAction(fitter)
 
 
 @pytest.fixture
@@ -132,6 +138,15 @@ def action_out(action_foo, shop):
     return action_foo
 
 
+@pytest.fixture
+def handlers(action_out: BaseAction):
+    ret = {}
+    app_ctx = {}
+    for h, meta in action_out.make_handlers(app_ctx, None):
+        ret[meta.route_args[0][0]] = h
+    return ret
+
+
 @pytest.mark.parametrize(
     'arg, foo_bar_baz',
     [
@@ -142,15 +157,13 @@ def action_out(action_foo, shop):
     ],
     indirect=['foo_bar_baz']
 )
-def test_action(action_out, mounter, arg: MagicMock):
-    action_out.mount()
-    assert mounter.dict['/foo']
-    res = mounter.dict['/foo'](arg)
+def test_action(handlers, arg: MagicMock):
+    assert '/foo' in handlers
+    res = handlers['/foo'](arg)
     arg.assert_called_with('core')
     assert res == ['a', 'foo', 'bar', 'baz']
 
-    assert mounter.dict['/bar']
-    res = mounter.dict['/bar'](arg)
+    assert '/bar' in handlers
+    res = handlers['/bar'](arg)
     arg.assert_called_with('barcore')
     assert res == ['/bar', 'baz', 'foo']
-

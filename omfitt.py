@@ -184,7 +184,7 @@ class FixtureStorage(UserDict):
 
 
 class FixtureShop:
-    __slots__ = ('_local', '_on_checkout')
+    __slots__ = ('_local', '_on_checkout', '_init_fixtures')
 
     @classmethod
     def make_from(cls, src_class):
@@ -193,9 +193,9 @@ class FixtureShop:
 
     def __init__(self, fixtures_dict):
         self._local = threading.local()
-        this = self._local.this = SimpleNamespace()
-        this.fixtures = None
-        self.open(fixtures_dict)
+        # _init_fixtures shouldnt be used in request
+        self._init_fixtures = fixtures_dict
+        self.open(None)
         self._on_checkout = None
 
     @property
@@ -211,11 +211,13 @@ class FixtureShop:
         return ret
 
     def open(self, fixtures):
-        this = self._local.this
+        this = self._local.this = SimpleNamespace()
         this.opened = True
         this.backdoor_opened = False
-        if fixtures is not None:
-            this.fixtures = FixtureStorage(fixtures)
+        if fixtures is None:
+            # we are in loading mode (action.uses())
+            fixtures = self._init_fixtures
+        this.fixtures = FixtureStorage(fixtures)
         return self
 
     def close(self):

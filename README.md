@@ -37,7 +37,7 @@ class shop:
 
 
 action = Action(shop)
-app = App(action, app_folder=os.path.dirname(__file__))
+app = App(__name__, action)
 
 
 @action("api/index")
@@ -76,8 +76,8 @@ class Counter(BaseFixture):
         ctx.provide('client', {app_ctx.name: self.cnt})
 
 
-app = App(Action(), os.path.dirname(__file__))
-ctx = app.mount('client')
+app = App(_name__, Action())
+ctx = app.mount()
 
 reusable_app.shop.fixtures.client_counter = Counter()
 reusable_app.mount('first', ctx, base_url='first')

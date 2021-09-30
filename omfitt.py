@@ -184,7 +184,7 @@ class FixtureStorage(UserDict):
 
 
 class FixtureShop:
-    __slots__ = ('_local', '_on_checkout', '_init_fixtures')
+    __slots__ = ('_local', '_on_checkout', '_init_fixtures', '_init_fixtures_store')
 
     @classmethod
     def make_from(cls, src_class):
@@ -195,12 +195,13 @@ class FixtureShop:
         self._local = threading.local()
         # _init_fixtures shouldnt be used in request
         self._init_fixtures = fixtures_dict
+        self._init_fixtures_store = FixtureStorage(fixtures_dict)
         self.open(None)
         self._on_checkout = None
 
     @property
     def fixtures(self):
-        return self._local.this.fixtures
+        return self._init_fixtures_store
 
     @property
     def striped_fixtures(self):
@@ -670,10 +671,10 @@ empty_ctx = EmptyObj()
 
 
 class BaseCtx:
-    def __init__(self, app, name, master_ctx: 'BaseCtx' = None, props=None,):
+    def __init__(self, app, name=None, master_ctx: 'BaseCtx' = None, props=None,):
 
-        self.name = name
         self.app = app
+        self.name = name or app.name
         self.parent = None
         self.children = {}
         # mount-specific props like base_url, routes_map, static/template folder ...
@@ -708,12 +709,16 @@ class BaseApp:
         self._app_methods[name] = meth
         setattr(self, name, meth)
 
-    def mount(self, name, master_ctx=None, **props):
+    def mount(self, name=None, master_ctx=None, **props):
         app_ctx = self._make_ctx(name, master_ctx, props)
         for h, meta in self._action.make_handlers(app_ctx, self):
             for args in meta.route_args:
                 self._mount_route(app_ctx, h, args)
+        self._mounted()
         return app_ctx
+
+    def _mounted(self):
+        pass
 
     def _make_ctx(self, name, master_ctx, props):
         return BaseCtx(self, name, master_ctx, props)
